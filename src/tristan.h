@@ -82,10 +82,14 @@ always_inline int tristan_daq_histo(tristan_histo_t* histo, xsk_info_t* xsk, u8*
         // evt->id = ntohs(evt->id);
         // evt->channel = ntohs(evt->channel);
         // evt->energy = ntoh24b(evt->energy);
+        if (xsk->debug) {
+            printf("Evnt %d: Energy=%u; TimeStamp=%llu; Channel=%d; Mask=%b, Difference from previous EvtID: %d\n", evt.id,
+                evt.energy, (u64)evt.timestamp, evt.channel, evt.mask, last_evt_id != -1 ? evt.id - last_evt_id - 1 : 0);
+        }
         int histo_idx = log2l(evt.mask);
         histo->channels[evt.channel].histograms[histo_idx][evt.energy]++;
 
-        if (last_evt_id != -1 && evt.id - last_evt_id > 3)
+        if (last_evt_id != -1 && evt.id - last_evt_id > 1)
             xsk->stats.tristan_histogram_lost_evts += evt.id - last_evt_id - 1;
 
         last_evt_id = evt.id;

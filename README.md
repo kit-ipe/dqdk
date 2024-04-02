@@ -64,3 +64,12 @@ Arguments:
 | Packet Size | RSS UDP Ports | 1 Frame every | Queues | Wake up Flag | Huge Pages | Batch Size | Interrupts & Cores | Zero loss | Histo | MPPS | Payload Throughput | 
 | ----------- | ------ | --------- | ------------- | ----------- | ------ | --------- | ------------- | ----------- | ------ | ---- | ---- |
 | 3392 | 2 | 295nsec | 2 | Yes | Yes | 2048 | 2 Cores / Queue (ints and app) | Yes | No | 3.45 | 93.6% |
+
+## TODO
+- Check if atomics for histogramming work better on new system
+- Find a format to write the histograms to disk e.g. ROOT, netcdf, CSV?
+- use pthread_barrier_t to wait all threads to initialize before starting to work
+- Abstract DQDK API: set function pointer for do_daq logic dqdk.c:281, create parameterized functions
+for dqdk e.g. dqdk_init, dqdk_session_start ...
+- provide an API for storage e.g. io_uring...
+- build a mature build system e.g. using autotools

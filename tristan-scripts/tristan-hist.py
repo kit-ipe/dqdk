@@ -112,7 +112,7 @@ class TristanBoard:
         return self._write_to_device(f'w{reg:08X}_{value:08X}')
 
     def _write_reg_raw(self, reg, raw_value):
-        return self._write_to_device(f'w{reg:08X}_{raw_value}')
+        return self._write_to_device(f'w{reg:08X}_00{raw_value}')
 
     def _read_reg(self, reg, custom_port=None):
         hexval = self._read_from_device(f'r{reg:08X}', custom_port=custom_port)

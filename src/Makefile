@@ -8,8 +8,8 @@ LIB_DIR          = $(abspath ../xdp-tools/lib)
 USER_LIBS       := -lpthread -lnuma -lm
 MAN_PAGE        :=
 
-USER_DEFINES    += -O3 -Wno-maybe-uninitialized
-CFLAGS          += -I$(realpath .) $(USER_DEFINES)
+USER_DEFINES    += -D_GNU_SOURCE
+CFLAGS          += -I$(realpath .) -O3 -Wno-maybe-uninitialized $(USER_DEFINES)
 BPF_CFLAGS      += -I$(realpath .)
 
 include $(LIB_DIR)/common.mk

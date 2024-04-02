@@ -2,6 +2,9 @@
     "configurations": [
         {
             "name": "default",
+            "defines": [
+                "_GNU_SOURCE"
+            ],
             "includePath": [
                 "${workspaceFolder}/xdp-tools/headers/",
                 "${workspaceFolder}/xdp-tools/lib/libbpf/src/root/usr/include",
@@ -9,6 +12,8 @@
                 "${workspaceFolder}/src"
             ],
             "cStandard": "gnu11",
+            "compilerPath": "/usr/bin/gcc",
+            "intelliSenseMode": "linux-clang-x64",
             "configurationProvider": "ms-vscode.makefile-tools"
         }
     ],

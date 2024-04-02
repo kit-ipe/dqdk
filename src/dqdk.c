@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
-#define _GNU_SOURCE
 // #define USE_SIMD
 
 #include <arpa/inet.h>
@@ -511,7 +510,7 @@ int main(int argc, char** argv)
         .it_value.tv_nsec = 0
     };
     u8 opt_needs_wakeup = 0, opt_verbose = 0, opt_hyperthreading = 0,
-       opt_samecore = 0, opt_busy_poll = 0, opt_umem_flags = 0;
+       opt_samecore = 0, opt_busy_poll = 0, opt_umem_flags = 0, opt_debug = 0;
     int opt_selnumanode = 0;
 
     // program variables
@@ -546,7 +545,7 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    while ((opt = getopt(argc, argv, "b:cd:hi:m:p:q:s:uvwt:A:BI:M:D:HGSN:M:")) != -1) {
+    while ((opt = getopt(argc, argv, "b:cd:hi:m:p:q:s:uvwt:A:BI:M:DHGSN:M:")) != -1) {
         switch (opt) {
         case 'h':
             dqdk_usage(argv);
@@ -649,6 +648,9 @@ int main(int argc, char** argv)
                 dlog_errorv("Unknown TRISTAN mode: %s", optarg);
                 exit(EXIT_FAILURE);
             }
+            break;
+        case 'D':
+            opt_debug = 1;
             break;
         default:
             dqdk_usage(argv);
@@ -804,6 +806,7 @@ int main(int argc, char** argv)
         xsks[i].xdp_flags = 0;
         xsks[i].queue_id = opt_queues[i];
         xsks[i].index = i;
+        xsks[i].debug = opt_debug;
         xsks[i].private = huge_malloc(driver_numa_node, TRISTAN_HISTO_SZ);
 
         xsks[i].umem_info = umem_info_create(umem_size, opt_umem_flags, driver_numa_node);

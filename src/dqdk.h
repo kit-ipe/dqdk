@@ -312,6 +312,7 @@ typedef struct {
     u8* large_mem;
     int last_idx;
     void* private;
+    u8 debug;
 } xsk_info_t;
 
 int bpf_init_global_var(struct bpf_object* obj, const char* section, const char* varname, void* newvalue)
