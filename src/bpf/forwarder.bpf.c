@@ -10,9 +10,12 @@
 #include <netinet/udp.h>
 
 #define MAX_SOCKS 16
+#define MAX_PORTS 50
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
-__uint(xsk_prog_version, 1) SEC("xdp_metadata");
+
+__u16 expected_udp_data_sz = 0;
+
 struct {
     __uint(type, BPF_MAP_TYPE_XSKMAP);
     __uint(key_size, sizeof(__u32));
@@ -21,20 +24,14 @@ struct {
 } xsks_map SEC(".maps");
 
 struct {
-    __uint(priority, 1);
-    __uint(XDP_PASS, 1);
-} XDP_RUN_CONFIG(acquire);
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, sizeof(__u32));
+    __uint(max_entries, MAX_PORTS);
+} control_ports SEC(".maps");
 
-// static const __u16 expected_udp_data_sz;
-
-#define TRISTAN_CPORT 5001
-#define TRISTAN_EXPECTED_PKTSZ 3392
-
-#define UDP_HDRSZ sizeof(struct udphdr)
-#define EXPECTED_PKTSZ (TRISTAN_EXPECTED_PKTSZ + UDP_HDRSZ)
-
-SEC("xdp/acquire")
-int acquire(struct xdp_md* ctx)
+SEC("xdp/dqdk_forwarder")
+int forward(struct xdp_md* ctx)
 {
     void* data = (void*)(long)ctx->data;
     void* data_end = (void*)(long)ctx->data_end;
@@ -78,12 +75,16 @@ int acquire(struct xdp_md* ctx)
         return XDP_DROP;
     }
 
-    if (udp->dest == bpf_htons(TRISTAN_CPORT) || udp->source == bpf_htons(TRISTAN_CPORT)) {
+    int dstport = bpf_ntohs(udp->dest);
+    int srcport = bpf_ntohs(udp->source);
+    if (bpf_map_lookup_elem(&control_ports, &dstport) == NULL
+        && bpf_map_lookup_elem(&control_ports, &srcport) == NULL) {
         bpf_printk("XDP_PASS: %d\n", __LINE__);
         return XDP_PASS;
     }
 
-    if (udp->len != bpf_htons(EXPECTED_PKTSZ)) {
+    // Sometimes it is control data but not using the control port?
+    if (udp->len != expected_udp_data_sz) {
         bpf_printk("XDP_PASS: %d - UDP Len %d\n", __LINE__, bpf_ntohs(udp->len));
         return XDP_PASS;
     }

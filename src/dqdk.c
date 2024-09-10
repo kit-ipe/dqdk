@@ -2,8 +2,8 @@
 // #define USE_SIMD
 
 #include <arpa/inet.h>
-#include <bpf/bpf.h>
-#include <bpf/libbpf.h>
+#include <bpf.h>
+#include <libbpf.h>
 #include <errno.h>
 #include <linux/icmp.h>
 #include <linux/if_link.h>
@@ -34,7 +34,9 @@
 #include <math.h>
 // #include <rte_memcpy.h>
 #include <sys/resource.h>
+#include <bpf/libbpf.h>
 
+#include "bpf/forwarder.skel.h"
 #include "dqdk.h"
 #include "tcpip/ipv4.h"
 #include "tcpip/udp.h"
@@ -303,7 +305,7 @@ static always_inline int do_daq(xsk_info_t* xsk, umem_info_t* umem, tristan_mode
     return 0;
 }
 
-void* tristan_daq(void* rxctx_ptr)
+void* run_daq(void* rxctx_ptr)
 {
     dqdk_ctx_t* ctx = (dqdk_ctx_t*)rxctx_ptr;
     xsk_info_t* xsk = ctx->xsk;
@@ -410,14 +412,12 @@ void dqdk_usage(char** argv)
     printf("    -i <interface>               Set NIC to work on\n");
     printf("    -q <qid[-qid]>               Set range of hardware queues to work on e.g. -q 1 or -q 1-3.\n");
     printf("                                 Specifying multiple queues will launch a thread for each queue except if -p poll\n");
-    // printf("    -l <umem_length>             UMEM number of frames (should be power of 2). Default: 4096\n");
     printf("    -v                           Verbose\n");
     printf("    -b <size>                    Set batch size. Default: 64\n");
     printf("    -w                           Use XDP need wakeup flag\n");
-    printf("    -u                           Use unaligned memory for UMEM\n");
+    printf("    -s                           Expected Packet Size. Default: 3392\n");
     printf("    -A <irq1,irq2,...>           Set affinity mapping between application threads and drivers queues\n");
     printf("                                 e.g. q1 to irq1, q2 to irq2,...\n");
-    printf("    -I <irq_string>              `grep` regex to read and count interrupts of interface from /proc/interrupts\n");
     printf("    -B                           Enable NAPI busy-poll\n");
     printf("    -H                           Considering Hyper-threading is enabled, this flag will assign affinity\n");
     printf("                                 of softirq and the app to two logical cores of the same physical core.\n");
@@ -491,16 +491,13 @@ int dqdk_set_affinity(int ht, int samecore, int irq, unsigned long* cpumask, cpu
         return ret;
     }
 
-    // struct sched_param schedp = { .sched_priority = sched_get_priority_max(SCHED_OTHER) };
-    // sched_setparam(0, &schedp);
     return sched_setaffinity(0, sizeof(cpu_set_t), cpuset);
 }
 
-#define XDP_FILE_XSK "./bpf/xsk.bpf.o"
 int main(int argc, char** argv)
 {
     // options values
-    char *opt_ifname = NULL, *opt_irqstring = NULL;
+    char *opt_ifname = NULL;
     u32 opt_batchsize = 64, opt_queues[MAX_QUEUES] = { -1 },
         opt_irqs[MAX_QUEUES] = { -1 };
     struct itimerspec opt_duration = {
@@ -511,17 +508,16 @@ int main(int argc, char** argv)
     };
     u8 opt_needs_wakeup = 0, opt_verbose = 0, opt_hyperthreading = 0,
        opt_samecore = 0, opt_busy_poll = 0, opt_umem_flags = 0, opt_debug = 0;
-    int opt_selnumanode = 0;
+    int opt_selnumanode = 0, opt_packetsz = 3392;
 
     // program variables
     tristan_mode_t mode;
     int ifindex, ret, opt, timer_flag = -1;
     u32 nbqueues = 0, nbirqs = 0, nprocs = 0, umem_size = UMEM_SIZE;
     struct rlimit rlim = { RLIM_INFINITY, RLIM_INFINITY };
-    interrupts_t *before_interrupts = NULL, *after_interrupts = NULL;
+    struct forwarder* forwarder = NULL;
     struct xdp_program* kern_prog = NULL;
     struct xdp_options xdp_opts;
-    char* xdp_filename = XDP_FILE_XSK;
     pthread_t* xsk_workers = NULL;
     pthread_attr_t* xsk_worker_attrs = NULL;
     cpu_set_t* cpusets = NULL;
@@ -545,7 +541,7 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    while ((opt = getopt(argc, argv, "b:cd:hi:m:p:q:s:uvwt:A:BI:M:DHGSN:M:")) != -1) {
+    while ((opt = getopt(argc, argv, "b:d:hi:q:vws:A:BM:DHGSN:")) != -1) {
         switch (opt) {
         case 'h':
             dqdk_usage(argv);
@@ -608,6 +604,9 @@ int main(int argc, char** argv)
                 }
             }
             break;
+        case 's':
+            opt_packetsz = atoi(optarg);
+            break;
         case 'v':
             opt_verbose = 1;
             break;
@@ -616,9 +615,6 @@ int main(int argc, char** argv)
             break;
         case 'w':
             opt_needs_wakeup = 1;
-            break;
-        case 'I':
-            opt_irqstring = optarg;
             break;
         case 'B':
             opt_busy_poll = 1;
@@ -629,9 +625,6 @@ int main(int argc, char** argv)
         case 'G':
             opt_umem_flags |= UMEM_FLAGS_USE_HGPG;
             break;
-        // case 'u':
-        //     opt_umem_flags |= UMEM_FLAGS_UNALIGNED;
-        //     break;
         case 'S':
             opt_samecore = 1;
             break;
@@ -708,11 +701,10 @@ int main(int argc, char** argv)
         dlog_infov("NUMA CPU Mask is %#010lX of %d CPUs", cpu_mask, nprocs);
     }
 
-    opt_umem_flags& UMEM_FLAGS_USE_HGPG ? dlog_info("Huge pages are activated!") : dlog_info("No huge pages are used!");
-    // opt_umem_flags& UMEM_FLAGS_UNALIGNED ? dlog_info("Unaligned UMEM is activated!") : dlog_info("Unaligned UMEM is NOT activated!");
+    (opt_umem_flags & UMEM_FLAGS_USE_HGPG) ? dlog_info("Huge pages are activated!") : dlog_info("No huge pages are used!");
 
     if (nbirqs != nbqueues) {
-        dlog_error("IRQs and number of queues must be equal");
+        dlog_errorv("IRQs=%d and number of queues=%d must be equal", nbirqs, nbqueues);
         goto cleanup;
     }
 
@@ -757,19 +749,11 @@ int main(int argc, char** argv)
         goto cleanup;
     }
 
-    kern_prog = xdp_program__open_file(xdp_filename, NULL, NULL);
-    struct bpf_object* obj = xdp_program__bpf_obj(kern_prog);
-    // int packetsz = 3392;
+    forwarder = forwarder__open();
+    forwarder->bss->expected_udp_data_sz = htons(opt_packetsz);
 
-    // ret = bpf_init_rodata_var(obj, "expected_udp_data_sz", (void*)&packetsz);
-    // if (ret) {
-    //     dlog_error2("bpf_set_rodata_var", ret);
-    //     goto cleanup;
-    // }
-
+    kern_prog = xdp_program__from_bpf_obj(forwarder->obj, NULL);
     ret = xdp_program__attach(kern_prog, ifindex, XDP_MODE_NATIVE, 0);
-    int mapfd = bpf_object__find_map_fd_by_name(obj, "xsks_map");
-
     if (ret < 0) {
         kern_prog = NULL;
         dlog_error2("xdp_program__attach", ret);
@@ -790,10 +774,6 @@ int main(int argc, char** argv)
         timer_settime(timer, 0, &opt_duration, NULL);
     }
 
-    if (opt_irqstring != NULL) {
-        before_interrupts = nic_get_interrupts(opt_irqstring, nprocs);
-    }
-
     histo = (tristan_histo_t*)huge_malloc(driver_numa_node, TRISTAN_HISTO_SZ);
 
     for (u32 i = 0; i < nbxsks; i++) {
@@ -802,7 +782,7 @@ int main(int argc, char** argv)
         xsks[i].busy_poll = opt_busy_poll;
         xsks[i].large_mem = malloc(4096);
         xsks[i].libbpf_flags = XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD;
-        xsks[i].bind_flags = XDP_ZEROCOPY | (opt_needs_wakeup ? XDP_USE_NEED_WAKEUP : 0);
+        xsks[i].bind_flags = (opt_needs_wakeup ? XDP_USE_NEED_WAKEUP : 0);
         xsks[i].xdp_flags = 0;
         xsks[i].queue_id = opt_queues[i];
         xsks[i].index = i;
@@ -829,9 +809,9 @@ int main(int argc, char** argv)
 
         u32 sockfd = xsk_socket__fd(xsks[i].socket);
         u32 mapkey = xsks[i].queue_id;
-        ret = bpf_map_update_elem(mapfd, &mapkey, &sockfd, BPF_ANY);
+        ret = bpf_map__update_elem(forwarder->maps.xsks_map, &mapkey, sizeof(u32), &sockfd, sizeof(u32), BPF_ANY);
         if (ret) {
-            dlog_error2("bpf_map_update_elem", ret);
+            dlog_error2("bpf_map__update_elem", ret);
             goto cleanup;
         }
 
@@ -859,7 +839,7 @@ int main(int argc, char** argv)
         dqdk_ctx_t* ctx = &ctxs[i];
         ctx->xsk = &xsks[i];
         ctx->tristan_mode = mode;
-        pthread_create(&xsk_workers[i], attrs, tristan_daq, (void*)ctx);
+        pthread_create(&xsk_workers[i], attrs, run_daq, (void*)ctx);
     }
 
     struct xsk_stat avg_stats;
@@ -897,8 +877,6 @@ int main(int argc, char** argv)
     }
 
     finished = 1;
-    if (opt_irqstring != NULL)
-        after_interrupts = nic_get_interrupts(opt_irqstring, nprocs);
 
     if (nbxsks != 1) {
         printf("Average Stats:\n");
@@ -921,37 +899,12 @@ cleanup:
     if (ctxs != NULL)
         free(ctxs);
 
-    if (after_interrupts != NULL && before_interrupts != NULL) {
-        u32 sum = 0;
-        dlog_info_head("IRQ Interrupts: ");
-        for (u32 i = 0; i < after_interrupts->nbirqs; i++) {
-            irq_interrupts_t* intr_before = &before_interrupts->interrupts[i];
-            irq_interrupts_t* intr_after = &after_interrupts->interrupts[i];
-
-            if (intr_before->irq != intr_after->irq) {
-                dlog_errorv("Incorrect IRQs: %d-%d", intr_before->irq, intr_after->irq);
-                continue;
-            }
-
-            int intrs = intr_after->interrupts - intr_before->interrupts;
-            dlog_info_print("%d: %d - ", intr_after->irq, intrs);
-            sum += intrs;
-        }
-
-        dlog_info_print("Total: %d", sum);
-        dlog_info_exit();
-
-        free(before_interrupts->interrupts);
-        free(after_interrupts->interrupts);
-        free(before_interrupts);
-        free(after_interrupts);
-    }
-
     if (timer_flag > 0) {
         timer_delete(timer);
     }
 
     if (kern_prog != NULL) {
+        forwarder__destroy(forwarder);
         xdp_program__detach(kern_prog, ifindex, XDP_MODE_NATIVE, 0);
         xdp_program__close(kern_prog);
     }

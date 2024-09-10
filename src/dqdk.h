@@ -100,6 +100,10 @@ int nic_numa_node(const char* ifname)
 {
     char ifnuma[PATH_MAX] = { 0 };
     snprintf(ifnuma, PATH_MAX, "/sys/class/net/%s/device/numa_node", ifname);
+
+    // File not exists
+    if (access(ifnuma, F_OK))
+        return 0;
     return sys_read_uint(ifnuma);
 }
 

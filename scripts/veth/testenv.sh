@@ -179,9 +179,9 @@ set_sysctls()
 
     [ -n "$in_ns" ] && nscmd="ip netns exec $in_ns"
     local sysctls=(accept_dad
-                   accept_ra
-                   mldv1_unsolicited_report_interval
-                   mldv2_unsolicited_report_interval)
+                    accept_ra
+                    mldv1_unsolicited_report_interval
+                    mldv2_unsolicited_report_interval)
 
     for s in ${sysctls[*]}; do
         $nscmd sysctl -w net.ipv6.conf.$iface.${s}=0 >/dev/null
@@ -223,6 +223,7 @@ setup()
 
     local NUM=$(get_num "$NS")
     local PEERNAME="testl-ve-$NUM"
+    [ -f /proc/sys/net/ipv6/ ] && IPV6_SUPPORTED=1 || IPV6_SUPPORTED=0
     [ -z "$IP6_PREFIX" ] && IP6_PREFIX="${IP6_SUBNET}:${NUM}::"
     [ -z "$IP4_PREFIX" ] && IP4_PREFIX="${IP4_SUBNET}.$((0x$NUM))."
 
@@ -239,29 +240,39 @@ setup()
 
     ip netns add "$NS"
     ip link add dev "$NS" type veth peer name veth0 netns "$NS"
+    if [ "$IPV6_SUPPORTED" -eq "1" ]; then
+        set_sysctls $NS
+    else
+        echo "IPv6 is not supported or disabled using legacy IPv4"
+        LEGACY_IP=1
+    fi
 
-    set_sysctls $NS
     ip link set dev "$NS" up
-    ip addr add dev "$NS" "${OUTSIDE_IP6}/${IP6_PREFIX_SIZE}"
     ethtool -K "$NS" rxvlan off txvlan off
     ethtool --offload "$NS" rx off tx off
-    # Prevent neighbour queries on the link
-    INSIDE_MAC=$(iface_macaddr veth0 "$NS")
-    ip neigh add "$INSIDE_IP6" lladdr "$INSIDE_MAC" dev "$NS" nud permanent
 
-    set_sysctls veth0 "$NS"
+    if [ "$IPV6_SUPPORTED" -eq "1" ]; then
+        set_sysctls veth0 "$NS"
+    fi
     ip -n "$NS" link set dev lo up
     ip -n "$NS" link set dev veth0 up
-    ip -n "$NS" addr add dev veth0 "${INSIDE_IP6}/${IP6_PREFIX_SIZE}"
     ip netns exec "$NS" ethtool -K veth0 rxvlan off txvlan off
     ip netns exec "$NS" ethtool --offload veth0 rx off tx off
 
-    # Prevent neighbour queries on the link
+    INSIDE_MAC=$(iface_macaddr veth0 "$NS")
     OUTSIDE_MAC=$(iface_macaddr "$NS")
-    ip -n "$NS" neigh add "$OUTSIDE_IP6" lladdr "$OUTSIDE_MAC" dev veth0 nud permanent
-    # Add route for whole test subnet, to make it easier to communicate between
-    # namespaces
-    ip -n "$NS" route add "${IP6_SUBNET}::/$IP6_FULL_PREFIX_SIZE" via "$OUTSIDE_IP6" dev veth0
+
+    if [ "$IPV6_SUPPORTED" -eq "1" ]; then
+        ip addr add dev "$NS" "${OUTSIDE_IP6}/${IP6_PREFIX_SIZE}"
+        # Prevent neighbour queries on the link
+        ip neigh add "$INSIDE_IP6" lladdr "$INSIDE_MAC" dev "$NS" nud permanent
+        ip -n "$NS" addr add dev veth0 "${INSIDE_IP6}/${IP6_PREFIX_SIZE}"
+        # Prevent neighbour queries on the link
+        ip -n "$NS" neigh add "$OUTSIDE_IP6" lladdr "$OUTSIDE_MAC" dev veth0 nud permanent
+        # Add route for whole test subnet, to make it easier to communicate between
+        # namespaces
+        ip -n "$NS" route add "${IP6_SUBNET}::/$IP6_FULL_PREFIX_SIZE" via "$OUTSIDE_IP6" dev veth0
+    fi
 
     if [ "$LEGACY_IP" -eq "1" ]; then
         ip addr add dev "$NS" "${OUTSIDE_IP4}/${IP4_PREFIX_SIZE}"
@@ -306,7 +317,7 @@ setup()
     echo ""
     wait_for_dev "$NS" && wait_for_dev veth0 "$NS"
 
-    LEGACY_IP=0 USE_VLAN=0 run_ping -c 1
+    USE_VLAN=0 run_ping -c 1
 
     echo "$NS" > "$STATEDIR/current"
 }
