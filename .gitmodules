@@ -1,3 +1,6 @@
 [submodule "xdp-tools"]
 	path = xdp-tools
 	url = https://github.com/xdp-project/xdp-tools.git
+[submodule "radc1_cli_tools"]
+	path = radc1_cli_tools
+	url = https://fuzzy.ipe.kit.edu/gogs/bormann/radc1_cli_tools.git

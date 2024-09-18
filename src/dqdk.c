@@ -3,7 +3,6 @@
 
 #include <arpa/inet.h>
 #include <bpf.h>
-#include <libbpf.h>
 #include <errno.h>
 #include <linux/icmp.h>
 #include <linux/if_link.h>
@@ -37,9 +36,11 @@
 #include <bpf/libbpf.h>
 
 #include "bpf/forwarder.skel.h"
-#include "dqdk.h"
+#include "dqdk-blk.h"
+#include "dqdk-sys.h"
 #include "tcpip/ipv4.h"
 #include "tcpip/udp.h"
+#include "dqdk.h"
 #include "tristan.h"
 
 typedef struct {
@@ -62,7 +63,6 @@ typedef struct {
 #define LARGE_MEMSZ ((u64)100 * 1024 * 1024 * 1024)
 
 volatile u32 break_flag = 0;
-static tristan_histo_t* histo = NULL;
 
 static void* umem_buffer_create(u32 size, u8 flags, int driver_numa)
 {
@@ -267,33 +267,23 @@ static always_inline int do_daq(xsk_info_t* xsk, umem_info_t* umem, tristan_mode
 
     for (int i = 0; i < rcvd; ++i) {
         u64 addr = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->addr;
-
-        // u64 orig;
-        // if (umem->flags & UMEM_FLAGS_UNALIGNED) {
-        //     orig = xsk_umem__extract_addr(addr);
-        //     addr = xsk_umem__add_offset_to_addr(addr);
-        // }
-
         u32 len = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->len;
         u8* frame = xsk_umem__get_data(umem->buffer, addr);
         u8* data = get_udp_payload(xsk, frame, len, &datalen);
 
         if (datalen != 0 && data != NULL) {
             switch (mode) {
-            case TRISTAN_MODE_RAW:
-                tristan_daq_raw(xsk, data, datalen);
+            case TRISTAN_MODE_WAVEFORM:
+                tristan_daq_waveform((tristan_private_t*)xsk->private, xsk, data, datalen);
                 break;
-            case TRISTAN_MODE_HISTOGRAM:
-                tristan_daq_histo((tristan_histo_t*)xsk->private, xsk, data, datalen);
+            case TRISTAN_MODE_ENERGYHISTO:
+                tristan_daq_energyhisto((tristan_private_t*)xsk->private, xsk, data, datalen);
                 break;
             default:
                 break;
             }
         }
 
-        // if (umem->flags & UMEM_FLAGS_UNALIGNED) {
-        //     *xsk_ring_prod__fill_addr(fq, idx_fq) = orig;
-        // }
         ++idx_rx;
         ++idx_fq;
     }
@@ -497,7 +487,7 @@ int dqdk_set_affinity(int ht, int samecore, int irq, unsigned long* cpumask, cpu
 int main(int argc, char** argv)
 {
     // options values
-    char *opt_ifname = NULL;
+    char* opt_ifname = NULL;
     u32 opt_batchsize = 64, opt_queues[MAX_QUEUES] = { -1 },
         opt_irqs[MAX_QUEUES] = { -1 };
     struct itimerspec opt_duration = {
@@ -511,8 +501,9 @@ int main(int argc, char** argv)
     int opt_selnumanode = 0, opt_packetsz = 3392;
 
     // program variables
-    tristan_mode_t mode;
-    int ifindex, ret, opt, timer_flag = -1;
+    tristan_mode_t mode = TRISTAN_MODE_WAVEFORM;
+    tristan_private_t private = { 0 };
+    int ifindex = -1, ret, opt, timer_flag = -1;
     u32 nbqueues = 0, nbirqs = 0, nprocs = 0, umem_size = UMEM_SIZE;
     struct rlimit rlim = { RLIM_INFINITY, RLIM_INFINITY };
     struct forwarder* forwarder = NULL;
@@ -527,7 +518,7 @@ int main(int argc, char** argv)
     socklen_t socklen;
     // NUMA
     int is_numa = 0;
-    int driver_numa_node;
+    int driver_numa_node = 0;
     unsigned long cpu_mask = 0;
     u8 selnumanode = 0, finished = 0;
 
@@ -633,10 +624,10 @@ int main(int argc, char** argv)
             opt_selnumanode = atoi(optarg);
             break;
         case 'M':
-            if (strcmp(optarg, "histo") == 0) {
-                mode = TRISTAN_MODE_HISTOGRAM;
-            } else if (strcmp(optarg, "raw") == 0) {
-                mode = TRISTAN_MODE_RAW;
+            if (strcmp(optarg, "energy-histo") == 0) {
+                mode = TRISTAN_MODE_ENERGYHISTO;
+            } else if (strcmp(optarg, "waveform") == 0) {
+                mode = TRISTAN_MODE_WAVEFORM;
             } else {
                 dlog_errorv("Unknown TRISTAN mode: %s", optarg);
                 exit(EXIT_FAILURE);
@@ -702,6 +693,11 @@ int main(int argc, char** argv)
     }
 
     (opt_umem_flags & UMEM_FLAGS_USE_HGPG) ? dlog_info("Huge pages are activated!") : dlog_info("No huge pages are used!");
+
+    if (ifindex < 0) {
+        dlog_error("Invalid NIC index\n");
+        goto cleanup;
+    }
 
     if (nbirqs != nbqueues) {
         dlog_errorv("IRQs=%d and number of queues=%d must be equal", nbirqs, nbqueues);
@@ -774,20 +770,25 @@ int main(int argc, char** argv)
         timer_settime(timer, 0, &opt_duration, NULL);
     }
 
-    histo = (tristan_histo_t*)huge_malloc(driver_numa_node, TRISTAN_HISTO_SZ);
+    if (mode == TRISTAN_MODE_ENERGYHISTO || mode == TRISTAN_MODE_LISTWAVE) {
+        private.histo = (tristan_histo_t*)huge_malloc(driver_numa_node, TRISTAN_HISTO_SZ);
+    }
+
+    // TODO: What is the size of allocation?
+    // if (mode == TRISTAN_MODE_WAVEFORM || mode == TRISTAN_MODE_LISTWAVE) {
+    //     private.bulk = huge_malloc(driver_numa_node, xx);
+    // }
 
     for (u32 i = 0; i < nbxsks; i++) {
-        xsks[i].last_idx = -1;
         xsks[i].batch_size = opt_batchsize;
         xsks[i].busy_poll = opt_busy_poll;
-        xsks[i].large_mem = malloc(4096);
         xsks[i].libbpf_flags = XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD;
         xsks[i].bind_flags = (opt_needs_wakeup ? XDP_USE_NEED_WAKEUP : 0);
         xsks[i].xdp_flags = 0;
         xsks[i].queue_id = opt_queues[i];
         xsks[i].index = i;
         xsks[i].debug = opt_debug;
-        xsks[i].private = huge_malloc(driver_numa_node, TRISTAN_HISTO_SZ);
+        xsks[i].private = &private;
 
         xsks[i].umem_info = umem_info_create(umem_size, opt_umem_flags, driver_numa_node);
         ret = umem_configure(xsks[i].umem_info);
@@ -883,6 +884,21 @@ int main(int argc, char** argv)
         stats_dump(&avg_stats);
     }
 
+    dqdk_blk_t* blk = dqdk_blk_init(DQDK_BLK_QUEUE_DEPTH);
+    if (private.histo) {
+        dqdk_blk_status_t stats = dqdk_blk_dump(blk, "tristan-histo.bin", FILE_BSIZE, TRISTAN_HISTO_SZ, private.histo);
+        if (stats.status != 0)
+            dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
+    }
+
+    if (private.bulk) {
+        dqdk_blk_status_t stats = dqdk_blk_dump(blk, "tristan-raw.bin", FILE_BSIZE, private.bulk_size, private.bulk);
+        if (stats.status != 0)
+            dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
+    }
+
+    dqdk_blk_fini(blk);
+
 cleanup:
     /**
      * in case some thread were running but others failed
@@ -899,9 +915,8 @@ cleanup:
     if (ctxs != NULL)
         free(ctxs);
 
-    if (timer_flag > 0) {
+    if (timer_flag > 0)
         timer_delete(timer);
-    }
 
     if (kern_prog != NULL) {
         forwarder__destroy(forwarder);
@@ -929,28 +944,23 @@ cleanup:
         }
         free(xsks);
 
-        if (xsk_workers != NULL) {
+        if (xsk_workers != NULL)
             free(xsk_workers);
-        }
     }
 
     if (xsk_worker_attrs != NULL) {
-        for (size_t i = 0; i < nbxsks; i++) {
+        for (size_t i = 0; i < nbxsks; i++)
             pthread_attr_destroy(&xsk_worker_attrs[i]);
-        }
 
         free(xsk_worker_attrs);
     }
 
-    if (cpusets != NULL) {
+    if (cpusets != NULL)
         free(cpusets);
-    }
 
-    if (histo != NULL) {
-        munmap(histo, TRISTAN_HISTO_SZ);
-    }
+    if (private.histo != NULL)
+        munmap(private.histo, TRISTAN_HISTO_SZ);
 
-    if (histo != NULL || (opt_umem_flags & UMEM_FLAGS_USE_HGPG)) {
+    if (private.histo != NULL || (opt_umem_flags & UMEM_FLAGS_USE_HGPG))
         set_hugepages(driver_numa_node, 0);
-    }
 }

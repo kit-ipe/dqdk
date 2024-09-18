@@ -11,9 +11,9 @@ if [ "$NIC" == "" ]; then
 fi
 shift
 
-DQDK_MODE="-M raw"
-if [ "$MODE" == "histo" ]; then
-    DQDK_MODE="-M histo"
+DQDK_MODE="-M waveform"
+if [ "$MODE" == "energy-histo" ]; then
+    DQDK_MODE="-M energy-histo"
 fi
 shift
 

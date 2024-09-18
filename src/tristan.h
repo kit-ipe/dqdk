@@ -1,7 +1,10 @@
 #ifndef TRISTAN_H
 #define TRISTAN_H
 
+#include <stdatomic.h>
 #include "dqdk.h"
+
+#define TRISTAN_FE_PORT 5000
 
 struct energy_evt {
     u16 id;
@@ -12,7 +15,22 @@ struct energy_evt {
     u64 timestamp : 48;
 } packed;
 
+struct waveform {
+    u16 id;
+    u16 channel;
+    u8 subcnt;
+    u8 aux_info[3];
+    u16 waveform;
+} packed;
+
+struct listwave {
+    struct energy_evt energy;
+    u16 waveform;
+} packed;
+
 typedef struct energy_evt energy_evt_t;
+typedef struct waveform waveform_t;
+typedef struct listwave listwave_t;
 
 #define TRISTAN_HISTO_EVT_SZ sizeof(energy_evt_t)
 
@@ -23,13 +41,18 @@ typedef struct energy_evt energy_evt_t;
 #define CHNLS_COUNT (CHNLS_1TILE * TILES_COUNT)
 
 typedef struct {
-    // _Atomic(u32) histograms[HISTO_COUNT][HISTO_BINS];
     u32 histograms[HISTO_COUNT][HISTO_BINS];
 } chnl_t;
 
 typedef struct {
     chnl_t channels[CHNLS_COUNT];
 } tristan_histo_t;
+
+typedef struct {
+    tristan_histo_t* histo;
+    u8* bulk;
+    int bulk_size;
+} tristan_private_t;
 
 #define TRISTAN_HISTO_SZ (sizeof(tristan_histo_t))
 
@@ -42,34 +65,24 @@ typedef struct {
 #endif
 
 typedef enum {
-    TRISTAN_MODE_RAW,
-    TRISTAN_MODE_HISTOGRAM,
+    TRISTAN_MODE_WAVEFORM,
+    TRISTAN_MODE_LISTWAVE,
+    TRISTAN_MODE_ENERGYHISTO,
 } tristan_mode_t;
 
-always_inline int tristan_daq_raw(xsk_info_t* xsk, u8* data, int datalen)
+always_inline int tristan_daq_waveform(tristan_private_t* private, xsk_info_t* xsk, u8* data, int datalen)
 {
-    // detector data
-    memcpy(xsk->large_mem, data, datalen);
+    (void)xsk;
+    // TODO: copy what?
+    u8* dst = private->bulk + private->bulk_size;
+    memcpy(dst, data, datalen);
+    private->bulk_size += datalen;
     // rte_memcpy(xsk->large_mem, data, datalen);
-    u64* nt_counter = (u64*)data;
-    u64 hst_counter = nt_counter[0];
-
-    if (xsk->last_idx != -1) {
-        int diff = hst_counter - xsk->last_idx;
-        if (diff == 0) {
-            printf("dups is %llu\n", hst_counter);
-            ++xsk->stats.tristan_dups;
-        } else {
-            ++xsk->stats.tristan_outoforder;
-        }
-    }
-
-    xsk->last_idx = hst_counter;
 
     return 0;
 }
 
-always_inline int tristan_daq_histo(tristan_histo_t* histo, xsk_info_t* xsk, u8* data, int datalen)
+always_inline int tristan_daq_energyhisto(tristan_private_t* private, xsk_info_t* xsk, u8* data, int datalen)
 {
     energy_evt_t* evts = (energy_evt_t*)data;
     int nbevts = datalen / TRISTAN_HISTO_EVT_SZ;
@@ -84,7 +97,8 @@ always_inline int tristan_daq_histo(tristan_histo_t* histo, xsk_info_t* xsk, u8*
                 evt.energy, (u64)evt.timestamp, evt.channel, evt.mask, last_evt_id != -1 ? evt.id - last_evt_id - 1 : 0);
         }
         int histo_idx = log2l(evt.mask);
-        histo->channels[evt.channel].histograms[histo_idx][evt.energy]++;
+        u32* counter = &private->histo->channels[evt.channel].histograms[histo_idx][evt.energy];
+        atomic_fetch_add_explicit(counter, 1, memory_order_relaxed);
 
         if (last_evt_id != -1 && evt.id - last_evt_id > 1)
             xsk->stats.tristan_histogram_lost_evts += evt.id - last_evt_id - 1;
