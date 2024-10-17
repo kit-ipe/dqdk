@@ -57,8 +57,12 @@ typedef struct {
 
 volatile bool _exitflag = false;
 
-#define SERVER_PORT 5000 // Server port
-#define SERVER_IP "192.168.1.100" // Server IP address
+#define SERVER_PORT 5001 // Server port
+#define SERVER_IP "192.168.1.20" // Server IP address
+
+#define SOURCE_PORT 5001
+#define SOURCE_IP "192.168.1.100"
+
 #define BUFFER_SIZE 3392 // Buffer size for messages
 
 #define TRISTAN_HISTO_EVT_SZ sizeof(energy_evt_t)
@@ -73,6 +77,7 @@ volatile bool _exitflag = false;
 typedef struct {
     int thread_id;
     struct sockaddr_in server_addr;
+    struct sockaddr_in source_addr;
 } thread_arg_t;
 
 tristan_histo_t* histo = NULL;
@@ -182,6 +187,8 @@ int main(int argc, char* argv[])
     pthread_t* threads = calloc(num_threads, sizeof(pthread_t));
     thread_arg_t* thread_args = calloc(num_threads, sizeof(thread_arg_t));
     struct sockaddr_in server_addr;
+    struct sockaddr_in source_addr;
+
 
     // Set up server address
     memset(&server_addr, 0, sizeof(server_addr));
@@ -189,10 +196,16 @@ int main(int argc, char* argv[])
     server_addr.sin_port = htons(SERVER_PORT);
     server_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
 
+    memset(&source_addr, 0, sizeof(server_addr));
+    source_addr.sin_family = AF_INET;
+    source_addr.sin_port = htons(SOURCE_PORT);
+    source_addr.sin_addr.s_addr = inet_addr(SOURCE_IP);
+
     // Create and start threads to receive messages concurrently
     for (int i = 0; i < num_threads; i++) {
         thread_args[i].thread_id = i;
         thread_args[i].server_addr = server_addr;
+        thread_args[i].source_addr = source_addr;
 
         if (pthread_create(&threads[i], NULL, receive_messages, (void*)&thread_args[i]) != 0) {
             perror("pthread_create failed");
