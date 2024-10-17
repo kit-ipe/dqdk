@@ -58,7 +58,7 @@ typedef struct {
 volatile bool _exitflag = false;
 
 #define SERVER_PORT 5000 // Server port
-#define SERVER_IP "127.0.0.1" // Server IP address
+#define SERVER_IP "192.168.1.100" // Server IP address
 #define BUFFER_SIZE 3392 // Buffer size for messages
 
 #define TRISTAN_HISTO_EVT_SZ sizeof(energy_evt_t)
@@ -76,6 +76,7 @@ typedef struct {
 } thread_arg_t;
 
 tristan_histo_t* histo = NULL;
+u64 pkt_count = 0;
 
 void histogram(unsigned char* data, int datalen)
 {
@@ -139,7 +140,8 @@ void* receive_messages(void* arg)
             perror("recvfrom failed");
             continue;
         }
-        printf("Received: %s \n", buffer);
+        
+        atomic_fetch_add_explicit(&pkt_count, 1, memory_order_relaxed);
         histogram(buffer, len);
     }
 
@@ -206,5 +208,6 @@ int main(int argc, char* argv[])
     free(threads);
     free(thread_args);
 
+    printf("Pkt count: %llu\n", pkt_count);
     return 0;
 }
