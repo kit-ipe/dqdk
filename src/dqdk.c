@@ -774,7 +774,7 @@ int main(int argc, char** argv)
         private.histo = (tristan_histo_t*)huge_malloc(driver_numa_node, TRISTAN_HISTO_SZ);
     }
 
-    // TODO: What is the size of allocation?
+    // TODO: What is the size of allocation? It is parameterizable
     // if (mode == TRISTAN_MODE_WAVEFORM || mode == TRISTAN_MODE_LISTWAVE) {
     //     private.bulk = huge_malloc(driver_numa_node, xx);
     // }

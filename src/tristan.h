@@ -36,8 +36,8 @@ typedef struct listwave listwave_t;
 
 #define HISTO_BINS (2 << 15) // 2^16 bins
 #define HISTO_COUNT 8 // usually 5 or 6
-#define CHNLS_1TILE 168
-#define TILES_COUNT 21
+#define CHNLS_1TILE 166
+#define TILES_COUNT 9
 #define CHNLS_COUNT (CHNLS_1TILE * TILES_COUNT)
 
 typedef struct {
