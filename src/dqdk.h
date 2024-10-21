@@ -78,7 +78,6 @@ typedef struct {
     u32 batch_size;
     u8 busy_poll;
     struct xsk_stat stats;
-    u8* large_mem;
     void* private;
     u8 debug;
 } xsk_info_t;

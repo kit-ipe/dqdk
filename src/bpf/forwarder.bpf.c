@@ -15,6 +15,7 @@
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 __u16 expected_udp_data_sz = 0;
+__u8 debug = 0;
 
 struct {
     __uint(type, BPF_MAP_TYPE_XSKMAP);
@@ -25,10 +26,10 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(key_size, sizeof(__u32));
-    __uint(value_size, sizeof(__u32));
+    __uint(key_size, sizeof(__u16));
+    __uint(value_size, sizeof(__u16));
     __uint(max_entries, MAX_PORTS);
-} control_ports SEC(".maps");
+} accept_ports SEC(".maps");
 
 SEC("xdp/dqdk_forwarder")
 int forward(struct xdp_md* ctx)
@@ -65,7 +66,7 @@ int forward(struct xdp_md* ctx)
     }
 
     if (ip->protocol != IPPROTO_UDP) {
-        bpf_printk("XDP_PASS: %d\n", __LINE__);
+        bpf_printk("IP Protocol %d is not UDP\n", ip->protocol);
         return XDP_PASS;
     }
 
@@ -75,21 +76,22 @@ int forward(struct xdp_md* ctx)
         return XDP_DROP;
     }
 
-    int dstport = bpf_ntohs(udp->dest);
     int srcport = bpf_ntohs(udp->source);
-    if (bpf_map_lookup_elem(&control_ports, &dstport) == NULL
-        && bpf_map_lookup_elem(&control_ports, &srcport) == NULL) {
+    if (bpf_map_lookup_elem(&accept_ports, &srcport) == NULL) {
         bpf_printk("XDP_PASS: %d\n", __LINE__);
         return XDP_PASS;
     }
 
     // Sometimes it is control data but not using the control port?
-    if (udp->len != expected_udp_data_sz) {
-        bpf_printk("XDP_PASS: %d - UDP Len %d\n", __LINE__, bpf_ntohs(udp->len));
-        return XDP_PASS;
-    }
+    // This was developed as a workaround for the scripts in tristan-scripts
+    // FIXME: to be removed later on whence the TRISTAN control is ready
+    // if (udp->len != expected_udp_data_sz) {
+    //     bpf_printk("XDP_PASS: %d - UDP Len %d\n", __LINE__, bpf_ntohs(udp->len));
+    //     return XDP_PASS;
+    // }
 
-    // bpf_printk("SRC Port=%d | DST Port=%d\n", bpf_htons(udp->source), bpf_htons(udp->dest));
+    if (debug)
+        bpf_printk("Forwarding | SRC Port=%d | DST Port=%d | LEN=%u |\n", bpf_htons(udp->source), bpf_htons(udp->dest), bpf_htons(udp->len));
 
     return bpf_redirect_map(&xsks_map, ctx->rx_queue_index, XDP_DROP);
 }

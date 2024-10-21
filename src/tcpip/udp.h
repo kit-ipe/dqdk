@@ -29,15 +29,20 @@
 
 always_inline int udp_audit_checksum(struct udphdr* udp, u32 src_ip, u32 dst_ip, u16 udplen)
 {
-    if (udp->check == 0) {
-        return 1;
-    }
+    (void) udp;
+    (void) src_ip;
+    (void) dst_ip;
+    (void) udplen;
+    return 1;
+    // if (udp->check == 0) {
+    //     return 1;
+    // }
 
-    u16 rcvd_csum = udp->check;
-    udp->check = 0;
-    u16 calc_csum = udp_csum(src_ip, dst_ip, udplen, IPPROTO_UDP, (u16*)udp);
-    // printf("calc_csum: %hu - rcvd_csum: %hu\n", calc_csum, rcvd_csum);
-    return calc_csum == rcvd_csum;
+    // u16 rcvd_csum = udp->check;
+    // udp->check = 0;
+    // u16 calc_csum = udp_csum(src_ip, dst_ip, udplen, IPPROTO_UDP, (u16*)udp);
+    // // printf("calc_csum: %hu - rcvd_csum: %hu\n", calc_csum, rcvd_csum);
+    // return calc_csum == rcvd_csum;
 }
 
 always_inline int udp_audit(struct udphdr* udp, u32 src_ip, u32 dst_ip, u16 udplen)

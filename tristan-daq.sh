@@ -1,7 +1,8 @@
 #! /bin/bash
 NIC=$1
 MODE=$2
-DEBUG=$3
+PORTS=$3
+DEBUG=$4
 
 Q=2
 if [ "$NIC" == "" ]; then
@@ -21,7 +22,9 @@ DIR=`dirname $0`
 echo $DIR
 source ${DIR}/scripts/mlx5-optimize.sh $NIC $Q
 
-INTR_STRING=$(cat /proc/interrupts | grep mlx5 | head -${Q} | awk '{printf "%s%s", sep, substr($1, 1, length($1)-1); sep=","} END{print ""}')
+pci=`ethtool -i $NIC | grep 'bus-info:' | sed 's/bus-info: //'`
+
+INTR_STRING=$(cat /proc/interrupts | grep ${pci} | head -${Q} | awk '{printf "%s%s", sep, substr($1, 1, length($1)-1); sep=","} END{print ""}')
 if [ $Q -eq 1 ]; then
     Q_STRING=0
     ethtool --set-priv-flags $NIC rx_cqe_compress on
@@ -34,11 +37,12 @@ fi
 ${DIR}/scripts/mlx5-rx-dbg.sh $NIC | tee ethtool.log &
 
 PERF_EV="context-switches,cpu-migrations,cycles,mem-loads,mem-stores,ref-cycles,instructions,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses,dTLB-load-misses,dTLB-loads,dTLB-store-misses,dTLB-stores,iTLB-load-misses,branch-instructions,branch-misses,bus-cycles"
+POWER_EV="power/energy-ram/,power/energy-pkg/"
 
 pushd ${DIR}/src
 #CMD="perf stat -e $PERF_EV ./dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G -w $DQDK_MODE"
 [[ "$DEBUG" == "debug" ]] && DEBUG_ARG="-D" || DEBUG_ARG=
-CMD="./dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G -w $DQDK_MODE $DEBUG_ARG"
+CMD="./dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
 echo "Executing DQDK Command is: $CMD"
 
 $CMD

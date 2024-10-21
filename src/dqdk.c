@@ -398,6 +398,7 @@ void dqdk_usage(char** argv)
 {
     printf("Usage: %s -i <interface_name> -q <hardware_queue_id>\n", argv[0]);
     printf("Arguments:\n");
+    printf("    -a <ports-range>             Accept source ports range e.g. 5000-5002 will reject all ports 3 ports 5000, 5001 & 5002,\n");
     printf("    -d <duration>                Set the run duration in seconds. Default: 3 secs\n");
     printf("    -i <interface>               Set NIC to work on\n");
     printf("    -q <qid[-qid]>               Set range of hardware queues to work on e.g. -q 1 or -q 1-3.\n");
@@ -498,7 +499,7 @@ int main(int argc, char** argv)
     };
     u8 opt_needs_wakeup = 0, opt_verbose = 0, opt_hyperthreading = 0,
        opt_samecore = 0, opt_busy_poll = 0, opt_umem_flags = 0, opt_debug = 0;
-    int opt_selnumanode = 0, opt_packetsz = 3392;
+    int opt_selnumanode = 0, opt_packetsz = 3438;
 
     // program variables
     tristan_mode_t mode = TRISTAN_MODE_WAVEFORM;
@@ -521,6 +522,8 @@ int main(int argc, char** argv)
     int driver_numa_node = 0;
     unsigned long cpu_mask = 0;
     u8 selnumanode = 0, finished = 0;
+    u16 start_port = 0, end_port = 0;
+    enum xdp_attach_mode xmode = XDP_MODE_NATIVE;
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -532,11 +535,21 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    while ((opt = getopt(argc, argv, "b:d:hi:q:vws:A:BM:DHGSN:")) != -1) {
+    while ((opt = getopt(argc, argv, "a:b:d:hi:q:vws:A:BM:DHGSN:")) != -1) {
         switch (opt) {
         case 'h':
             dqdk_usage(argv);
             return 0;
+        case 'a':
+            char* delimiter = NULL;
+            start_port = strtol(optarg, &delimiter, 10);
+            if (delimiter != optarg) {
+                end_port = strtol(++delimiter, &delimiter, 10);
+            } else {
+                dlog_error("Invalid port range.");
+                exit(EXIT_FAILURE);
+            }
+            break;
         case 'A':
             // mapping to queues is 1-to-1 e.g. first irq to first queue...
             if (strchr(optarg, ',') == NULL) {
@@ -648,6 +661,11 @@ int main(int argc, char** argv)
         goto cleanup;
     }
 
+    if (start_port == 0 || end_port == 0) {
+        dlog_error("Please provide a range of source ports to accept data on");
+        goto cleanup;
+    }
+
     driver_numa_node = nic_numa_node(opt_ifname);
     is_numa = numa_available();
     if (is_numa < 0) {
@@ -747,13 +765,19 @@ int main(int argc, char** argv)
 
     forwarder = forwarder__open();
     forwarder->bss->expected_udp_data_sz = htons(opt_packetsz);
+    forwarder->bss->debug = opt_debug;
 
     kern_prog = xdp_program__from_bpf_obj(forwarder->obj, NULL);
-    ret = xdp_program__attach(kern_prog, ifindex, XDP_MODE_NATIVE, 0);
+    ret = xdp_program__attach(kern_prog, ifindex, xmode, 0);
     if (ret < 0) {
         kern_prog = NULL;
         dlog_error2("xdp_program__attach", ret);
         goto cleanup;
+    }
+
+    for (u16 p = start_port; p <= end_port; p++) {
+        if (bpf_map__update_elem(forwarder->maps.accept_ports, &p, sizeof(p), &p, sizeof(p), 0) < 0)
+            dlog_errorv("Error adding port %u to accept-ports: %s(%d)", p, strerror(errno), errno);
     }
 
     xsk_workers = (pthread_t*)calloc(nbxsks, sizeof(pthread_t));
@@ -774,16 +798,16 @@ int main(int argc, char** argv)
         private.histo = (tristan_histo_t*)huge_malloc(driver_numa_node, TRISTAN_HISTO_SZ);
     }
 
-    // TODO: What is the size of allocation? It is parameterizable
-    // if (mode == TRISTAN_MODE_WAVEFORM || mode == TRISTAN_MODE_LISTWAVE) {
-    //     private.bulk = huge_malloc(driver_numa_node, xx);
-    // }
+    // TODO: parameterize this through arguments
+    if (mode == TRISTAN_MODE_WAVEFORM || mode == TRISTAN_MODE_LISTWAVE) {
+        private.bulk = malloc(4096);
+    }
 
     for (u32 i = 0; i < nbxsks; i++) {
         xsks[i].batch_size = opt_batchsize;
         xsks[i].busy_poll = opt_busy_poll;
         xsks[i].libbpf_flags = XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD;
-        xsks[i].bind_flags = (opt_needs_wakeup ? XDP_USE_NEED_WAKEUP : 0);
+        xsks[i].bind_flags = (opt_needs_wakeup ? XDP_USE_NEED_WAKEUP : 0) | (xmode == XDP_MODE_SKB ? XDP_COPY : 0);
         xsks[i].xdp_flags = 0;
         xsks[i].queue_id = opt_queues[i];
         xsks[i].index = i;
@@ -920,7 +944,7 @@ cleanup:
 
     if (kern_prog != NULL) {
         forwarder__destroy(forwarder);
-        xdp_program__detach(kern_prog, ifindex, XDP_MODE_NATIVE, 0);
+        xdp_program__detach(kern_prog, ifindex, xmode, 0);
         xdp_program__close(kern_prog);
     }
 
@@ -933,14 +957,6 @@ cleanup:
                 umem_info_free(xsk.umem_info);
                 free(xsk.umem_info);
             }
-
-            if (xsk.large_mem != NULL) {
-                // munmap(large_mem, LARGE_MEMSZ);
-                free(xsk.large_mem);
-            }
-
-            if (xsk.private != NULL)
-                munmap(xsk.private, TRISTAN_HISTO_SZ);
         }
         free(xsks);
 
@@ -957,6 +973,9 @@ cleanup:
 
     if (cpusets != NULL)
         free(cpusets);
+
+    if (private.bulk)
+        free(private.bulk);
 
     if (private.histo != NULL)
         munmap(private.histo, TRISTAN_HISTO_SZ);

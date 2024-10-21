@@ -74,7 +74,9 @@ always_inline int tristan_daq_waveform(tristan_private_t* private, xsk_info_t* x
 {
     (void)xsk;
     // TODO: copy what?
-    u8* dst = private->bulk + private->bulk_size;
+    // u8* dst = private->bulk + private->bulk_size;
+    u8* dst = private->bulk;
+
     memcpy(dst, data, datalen);
     private->bulk_size += datalen;
     // rte_memcpy(xsk->large_mem, data, datalen);
