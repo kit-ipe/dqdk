@@ -66,7 +66,7 @@ volatile u32 break_flag = 0;
 
 static void* umem_buffer_create(u32 size, u8 flags, int driver_numa)
 {
-    return flags & UMEM_FLAGS_USE_HGPG ? huge_malloc(driver_numa, size) : mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    return flags & UMEM_FLAGS_USE_HGPG ? huge_malloc(driver_numa, size, HUGE_PAGE_2MB) : mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 }
 
 static umem_info_t* umem_info_create(u32 size, u8 flags, int driver_numa)
@@ -192,7 +192,7 @@ static int fq_ring_configure(xsk_info_t* xsk)
     return 0;
 }
 
-always_inline u8* get_udp_payload(xsk_info_t* xsk, u8* buffer, u32 len, u32* datalen)
+dqdk_always_inline u8* get_udp_payload(xsk_info_t* xsk, u8* buffer, u32 len, u32* datalen)
 {
     struct ethhdr* frame = (struct ethhdr*)buffer;
     u16 ethertype = ntohs(frame->h_proto);
@@ -229,7 +229,7 @@ always_inline u8* get_udp_payload(xsk_info_t* xsk, u8* buffer, u32 len, u32* dat
     return (u8*)(udp + 1);
 }
 
-static always_inline int do_daq(xsk_info_t* xsk, umem_info_t* umem, tristan_mode_t mode)
+static dqdk_always_inline int do_daq(xsk_info_t* xsk, umem_info_t* umem, tristan_mode_t mode)
 {
     u32 idx_rx = 0, idx_fq = 0, datalen = 0;
     struct xsk_ring_prod* fq = &umem->fq0;
@@ -399,7 +399,7 @@ void dqdk_usage(char** argv)
     printf("Usage: %s -i <interface_name> -q <hardware_queue_id>\n", argv[0]);
     printf("Arguments:\n");
     printf("    -a <ports-range>             Accept source ports range e.g. 5000-5002 will reject all ports 3 ports 5000, 5001 & 5002,\n");
-    printf("    -d <duration>                Set the run duration in seconds. Default: 3 secs\n");
+    printf("    -d <duration>                Set the run duration in seconds. Required for TRISTAN waveform and listwave modes\n");
     printf("    -i <interface>               Set NIC to work on\n");
     printf("    -q <qid[-qid]>               Set range of hardware queues to work on e.g. -q 1 or -q 1-3.\n");
     printf("                                 Specifying multiple queues will launch a thread for each queue except if -p poll\n");
@@ -407,6 +407,7 @@ void dqdk_usage(char** argv)
     printf("    -b <size>                    Set batch size. Default: 64\n");
     printf("    -w                           Use XDP need wakeup flag\n");
     printf("    -s                           Expected Packet Size. Default: 3392\n");
+    printf("    -m <waveform|energy-histo>   Set TRISTAN Mode.\n");
     printf("    -A <irq1,irq2,...>           Set affinity mapping between application threads and drivers queues\n");
     printf("                                 e.g. q1 to irq1, q2 to irq2,...\n");
     printf("    -B                           Enable NAPI busy-poll\n");
@@ -485,18 +486,29 @@ int dqdk_set_affinity(int ht, int samecore, int irq, unsigned long* cpumask, cpu
     return sched_setaffinity(0, sizeof(cpu_set_t), cpuset);
 }
 
+unsigned long long int dqdk_round_to_power2(unsigned long long int n)
+{
+    if (n == 0)
+        return 1;
+
+    n--;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    n++;
+
+    return n;
+}
+
 int main(int argc, char** argv)
 {
     // options values
     char* opt_ifname = NULL;
     u32 opt_batchsize = 64, opt_queues[MAX_QUEUES] = { -1 },
         opt_irqs[MAX_QUEUES] = { -1 };
-    struct itimerspec opt_duration = {
-        .it_interval.tv_sec = DQDK_DURATION,
-        .it_interval.tv_nsec = 0,
-        .it_value.tv_sec = opt_duration.it_interval.tv_sec,
-        .it_value.tv_nsec = 0
-    };
+    double opt_duration = -1;
     u8 opt_needs_wakeup = 0, opt_verbose = 0, opt_hyperthreading = 0,
        opt_samecore = 0, opt_busy_poll = 0, opt_umem_flags = 0, opt_debug = 0;
     int opt_selnumanode = 0, opt_packetsz = 3438;
@@ -519,7 +531,7 @@ int main(int argc, char** argv)
     socklen_t socklen;
     // NUMA
     int is_numa = 0;
-    int driver_numa_node = 0;
+    int driver_numa_node = 0, link_mbps = 0;
     unsigned long cpu_mask = 0;
     u8 selnumanode = 0, finished = 0;
     u16 start_port = 0, end_port = 0;
@@ -535,7 +547,7 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    while ((opt = getopt(argc, argv, "a:b:d:hi:q:vws:A:BM:DHGSN:")) != -1) {
+    while ((opt = getopt(argc, argv, "a:b:d:hi:q:vws:m:A:BDHGSN:")) != -1) {
         switch (opt) {
         case 'h':
             dqdk_usage(argv);
@@ -573,15 +585,12 @@ int main(int argc, char** argv)
             }
             break;
         case 'd':
-            timer_flag = 1;
-            opt_duration.it_interval.tv_sec = atoi(optarg);
-            opt_duration.it_interval.tv_nsec = 0;
-            opt_duration.it_value.tv_sec = opt_duration.it_interval.tv_sec;
-            opt_duration.it_value.tv_nsec = 0;
+            opt_duration = atof(optarg);
             break;
         case 'i':
             opt_ifname = optarg;
             ifindex = if_nametoindex(opt_ifname);
+            link_mbps = dqdk_get_link_speed(opt_ifname);
             break;
         case 'q':
             if (strchr(optarg, '-') == NULL) {
@@ -636,7 +645,7 @@ int main(int argc, char** argv)
             selnumanode = 1;
             opt_selnumanode = atoi(optarg);
             break;
-        case 'M':
+        case 'm':
             if (strcmp(optarg, "energy-histo") == 0) {
                 mode = TRISTAN_MODE_ENERGYHISTO;
             } else if (strcmp(optarg, "waveform") == 0) {
@@ -645,6 +654,8 @@ int main(int argc, char** argv)
                 dlog_errorv("Unknown TRISTAN mode: %s", optarg);
                 exit(EXIT_FAILURE);
             }
+            break;
+        case 'M':
             break;
         case 'D':
             opt_debug = 1;
@@ -660,6 +671,8 @@ int main(int argc, char** argv)
         dlog_error("Invalid interface name or number of queues");
         goto cleanup;
     }
+
+    dlog_infov("Selected Interface (%s) Speed= %dMbps", opt_ifname, link_mbps);
 
     if (start_port == 0 || end_port == 0) {
         dlog_error("Please provide a range of source ports to accept data on");
@@ -786,21 +799,26 @@ int main(int argc, char** argv)
     xsk_worker_attrs = (pthread_attr_t*)calloc(nbxsks, sizeof(pthread_attr_t));
     cpusets = (cpu_set_t*)calloc(nbxsks, sizeof(cpu_set_t));
 
-    if (timer_flag > 0) {
-        struct sigevent sigv;
-        sigv.sigev_notify = SIGEV_SIGNAL;
-        sigv.sigev_signo = SIGUSR1;
-        timer_create(CLOCK_MONOTONIC, &sigv, &timer);
-        timer_settime(timer, 0, &opt_duration, NULL);
-    }
-
     if (mode == TRISTAN_MODE_ENERGYHISTO || mode == TRISTAN_MODE_LISTWAVE) {
-        private.histo = (tristan_histo_t*)huge_malloc(driver_numa_node, TRISTAN_HISTO_SZ);
+        private.histo = (tristan_histo_t*)huge_malloc(driver_numa_node, TRISTAN_HISTO_SZ, HUGE_PAGE_2MB);
     }
 
-    // TODO: parameterize this through arguments
     if (mode == TRISTAN_MODE_WAVEFORM || mode == TRISTAN_MODE_LISTWAVE) {
-        private.bulk = malloc(4096);
+        if (opt_duration < 0) {
+            dlog_error("TRISTAN Modes: waveform and listwave require setting a duration");
+            goto cleanup;
+        }
+
+        /* Calculate the size of the needed buffer using link speed, duration and packet size
+         * Convert link speed to bytes per second from Mbits per second,
+         * Convert duration from milliseconds to seconds
+         */
+        double bulk_size = ((link_mbps * 1.0 / 8) * 1024 * 1024) * (opt_duration * 1.0 / 1000);
+        private.max_bulk_size = (u64)ceil(bulk_size);
+        printf("private.max_bulk_size=%llu\n", private.max_bulk_size);
+        private.bulk = huge_malloc(driver_numa_node, private.max_bulk_size, HUGE_PAGE_2MB);
+        private.head = private.bulk;
+        private.bulk_size = 0;
     }
 
     for (u32 i = 0; i < nbxsks; i++) {
@@ -908,20 +926,17 @@ int main(int argc, char** argv)
         stats_dump(&avg_stats);
     }
 
-    dqdk_blk_t* blk = dqdk_blk_init(DQDK_BLK_QUEUE_DEPTH);
     if (private.histo) {
-        dqdk_blk_status_t stats = dqdk_blk_dump(blk, "tristan-histo.bin", FILE_BSIZE, TRISTAN_HISTO_SZ, private.histo);
+        dqdk_blk_status_t stats = dqdk_blk_dump("tristan-histo.bin", FILE_BSIZE, TRISTAN_HISTO_SZ, private.histo);
         if (stats.status != 0)
             dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
     }
 
-    if (private.bulk) {
-        dqdk_blk_status_t stats = dqdk_blk_dump(blk, "tristan-raw.bin", FILE_BSIZE, private.bulk_size, private.bulk);
+    if (private.bulk && private.bulk_size != 0) {
+        dqdk_blk_status_t stats = dqdk_blk_dump("tristan-raw.bin", FILE_BSIZE, private.head - private.bulk, private.bulk);
         if (stats.status != 0)
             dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
     }
-
-    dqdk_blk_fini(blk);
 
 cleanup:
     /**
@@ -974,12 +989,15 @@ cleanup:
     if (cpusets != NULL)
         free(cpusets);
 
-    if (private.bulk)
-        free(private.bulk);
+    if (private.bulk != NULL)
+        munmap(private.bulk, private.max_bulk_size);
 
     if (private.histo != NULL)
         munmap(private.histo, TRISTAN_HISTO_SZ);
 
-    if (private.histo != NULL || (opt_umem_flags & UMEM_FLAGS_USE_HGPG))
-        set_hugepages(driver_numa_node, 0);
+    if (private.histo != NULL || private.bulk != NULL)
+        set_hugepages(driver_numa_node, 0, HUGE_PAGE_2MB);
+
+    if (opt_umem_flags & UMEM_FLAGS_USE_HGPG)
+        set_hugepages(driver_numa_node, 0, HUGE_PAGE_2MB);
 }

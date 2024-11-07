@@ -32,7 +32,7 @@
 #define DQDK_INET_CSUM_H
 
 #include <linux/types.h>
-#include "../dqdk.h"
+#include "../ctypes.h"
 
 #ifdef USE_SIMD
 #include "inet_csum_simd.h"
@@ -42,7 +42,7 @@
  * This function code has been taken from
  * Linux kernel lib/checksum.c
  */
-always_inline unsigned short from32to16(unsigned int x)
+dqdk_always_inline unsigned short from32to16(unsigned int x)
 {
     /* add up 16-bit and 16-bit for 16+c bit */
     x = (x & 0xffff) + (x >> 16);
@@ -55,7 +55,7 @@ always_inline unsigned short from32to16(unsigned int x)
  * This function code has been taken from
  * Linux kernel lib/checksum.c
  */
-always_inline u32 from64to32(u64 x)
+dqdk_always_inline u32 from64to32(u64 x)
 {
     /* add up 32-bit and 32-bit for 32+c bit */
     x = (x & 0xffffffff) + (x >> 32);
@@ -68,7 +68,7 @@ always_inline u32 from64to32(u64 x)
  * This function code has been taken from
  * Linux kernel lib/checksum.c
  */
-always_inline unsigned int inet_csum(const unsigned char* buff, int len)
+dqdk_always_inline unsigned int inet_csum(const unsigned char* buff, int len)
 {
     unsigned int result = 0;
     int odd;
@@ -124,7 +124,7 @@ out:
     return result;
 }
 
-always_inline __sum16 inet_fast_csum(const void* data, unsigned int size)
+dqdk_always_inline __sum16 inet_fast_csum(const void* data, unsigned int size)
 {
     return (__sum16)~inet_csum(data, size);
 }
@@ -135,7 +135,7 @@ always_inline __sum16 inet_fast_csum(const void* data, unsigned int size)
  *	This function code has been taken from
  *	Linux kernel lib/checksum.c
  */
-always_inline __sum16 ip_fast_csum(const void* iph, unsigned int ihl)
+dqdk_always_inline __sum16 ip_fast_csum(const void* iph, unsigned int ihl)
 {
     return inet_fast_csum(iph, ihl * 4);
 }
@@ -144,7 +144,7 @@ always_inline __sum16 ip_fast_csum(const void* iph, unsigned int ihl)
  * This function code has been taken from
  * Linux kernel lib/checksum.c
  */
-always_inline __wsum csum_tcpudp_nofold(__be32 saddr, __be32 daddr,
+dqdk_always_inline __wsum csum_tcpudp_nofold(__be32 saddr, __be32 daddr,
     __u32 len, __u8 proto, __wsum sum)
 {
     unsigned long long s = (u32)sum;
@@ -164,7 +164,7 @@ always_inline __wsum csum_tcpudp_nofold(__be32 saddr, __be32 daddr,
  * This function code has been taken from
  * Linux kernel include/asm-generic/checksum.h
  */
-always_inline __sum16 csum_fold(__wsum csum)
+dqdk_always_inline __sum16 csum_fold(__wsum csum)
 {
     u32 sum = (u32)csum;
 
@@ -177,13 +177,13 @@ always_inline __sum16 csum_fold(__wsum csum)
  * This function has been taken from
  * Linux kernel include/asm-generic/checksum.h
  */
-always_inline __sum16 csum_tcpudp_magic(__be32 saddr, __be32 daddr, __u32 len,
+dqdk_always_inline __sum16 csum_tcpudp_magic(__be32 saddr, __be32 daddr, __u32 len,
     __u8 proto, __wsum sum)
 {
     return csum_fold(csum_tcpudp_nofold(saddr, daddr, len, proto, sum));
 }
 
-always_inline u16 udp_csum(u32 saddr, u32 daddr, u32 len,
+dqdk_always_inline u16 udp_csum(u32 saddr, u32 daddr, u32 len,
     u8 proto, u16* udp_pkt)
 {
     u32 sum = 0;

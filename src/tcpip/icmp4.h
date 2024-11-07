@@ -9,7 +9,7 @@
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 
-always_inline int icmp4_pong(struct ethhdr* frame, u32 len, u8* pong_reply)
+dqdk_always_inline int icmp4_pong(struct ethhdr* frame, u32 len, u8* pong_reply)
 {
     struct iphdr* packet = (struct iphdr*)(frame + 1);
     struct icmphdr* icmp = (struct icmphdr*)(packet + 1);

@@ -39,7 +39,7 @@
 
 #include <x86intrin.h>
 
-always_inline inline uint64_t m128i_extract_u64(__m128i a, int i)
+dqdk_always_inline inline uint64_t m128i_extract_u64(__m128i a, int i)
 {
 #if __x86_64
 
@@ -61,7 +61,7 @@ always_inline inline uint64_t m128i_extract_u64(__m128i a, int i)
 #endif
 }
 
-always_inline u32 udp_csum_avx2(const u16* udp_pkt, u32 len)
+dqdk_always_inline u32 udp_csum_avx2(const u16* udp_pkt, u32 len)
 {
     const uint64_t* buf64 = (const uint64_t*)udp_pkt;
     uint64_t sum64 = 0;

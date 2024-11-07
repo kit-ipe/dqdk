@@ -3,7 +3,6 @@
 
 #include <limits.h>
 #include <time.h>
-#include <liburing.h>
 
 #include "ctypes.h"
 
@@ -18,13 +17,6 @@ typedef struct {
     int blk_size;
 } dqdk_blk_status_t;
 
-typedef struct {
-    struct io_uring ring;
-    u32 nb_entries;
-} dqdk_blk_t;
-
-dqdk_blk_t* dqdk_blk_init(int nbentries);
-dqdk_blk_status_t dqdk_blk_dump(dqdk_blk_t* blk, const char* path, u32 blk_size, u64 totalsz, void* data);
-int dqdk_blk_fini(dqdk_blk_t* blk);
+dqdk_blk_status_t dqdk_blk_dump(const char* path, u32 blk_size, u64 totalsz, void* data);
 
 #endif

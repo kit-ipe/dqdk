@@ -1,6 +1,7 @@
 #ifndef TRISTAN_H
 #define TRISTAN_H
 
+#include <rte_memcpy.h>
 #include <stdatomic.h>
 #include "dqdk.h"
 
@@ -51,7 +52,9 @@ typedef struct {
 typedef struct {
     tristan_histo_t* histo;
     u8* bulk;
-    int bulk_size;
+    u8* head;
+    u64 bulk_size;
+    u64 max_bulk_size;
 } tristan_private_t;
 
 #define TRISTAN_HISTO_SZ (sizeof(tristan_histo_t))
@@ -70,21 +73,16 @@ typedef enum {
     TRISTAN_MODE_ENERGYHISTO,
 } tristan_mode_t;
 
-always_inline int tristan_daq_waveform(tristan_private_t* private, xsk_info_t* xsk, u8* data, int datalen)
+static dqdk_always_inline int tristan_daq_waveform(tristan_private_t* private, xsk_info_t* xsk, u8* data, int datalen)
 {
     (void)xsk;
-    // TODO: copy what?
-    // u8* dst = private->bulk + private->bulk_size;
-    u8* dst = private->bulk;
+    u8* head = atomic_fetch_add_explicit(&private->head, datalen, memory_order_relaxed);
+    memcpy(head, data, datalen);
 
-    memcpy(dst, data, datalen);
-    private->bulk_size += datalen;
-    // rte_memcpy(xsk->large_mem, data, datalen);
-
-    return 0;
+    return -1;
 }
 
-always_inline int tristan_daq_energyhisto(tristan_private_t* private, xsk_info_t* xsk, u8* data, int datalen)
+dqdk_always_inline int tristan_daq_energyhisto(tristan_private_t* private, xsk_info_t* xsk, u8* data, int datalen)
 {
     energy_evt_t* evts = (energy_evt_t*)data;
     int nbevts = datalen / TRISTAN_HISTO_EVT_SZ;

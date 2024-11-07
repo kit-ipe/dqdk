@@ -10,7 +10,7 @@ LIB_DIR          = ../xdp-tools/lib
 USER_LIBS       := -lpthread -lnuma -lm -luring
 MAN_PAGE        :=
 
-USER_DEFINES    += -D_GNU_SOURCE -I$(realpath .) -O3 -g
+USER_DEFINES    += -D_GNU_SOURCE -I$(realpath .) -O3 -g -march=native
 CFLAGS          += -I$(realpath ../xdp-tools/headers/) -I$(realpath ../xdp-tools/lib/libbpf/src) $(USER_DEFINES)
 BPF_CFLAGS      += -I$(realpath .)
 

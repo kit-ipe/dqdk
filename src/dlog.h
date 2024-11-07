@@ -6,8 +6,8 @@
 #define dlogv(format, vargs...) fprintf(stdout, format, vargs)
 #define dlog(format) fprintf(stdout, format)
 
-#define dlog_error2(func, ret) dlogv("[ERROR] [%s:%d] " func " (%d): %s\n", \
-    __FILE__, __LINE__, ret, strerror(errno));
+#define dlog_error2(func, ret) dlogv("[ERROR] [%s:%d] " func " (%d): %s(%d)\n", \
+    __FILE__, __LINE__, ret, strerror(errno), errno);
 
 #define dlog_error(error) dlogv("[ERROR] %s\n", error)
 #define dlog_errorv(errfmt, vargs...) dlogv("[ERROR] " errfmt "\n", vargs)

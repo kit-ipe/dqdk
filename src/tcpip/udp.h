@@ -27,7 +27,7 @@
 #define UDP_PKT_SIZE (IP_PKT_SIZE - sizeof(struct iphdr))
 #define UDP_PKT_DATA_SIZE (UDP_PKT_SIZE - (sizeof(struct udphdr) + PKTGEN_HDR_SIZE))
 
-always_inline int udp_audit_checksum(struct udphdr* udp, u32 src_ip, u32 dst_ip, u16 udplen)
+dqdk_always_inline int udp_audit_checksum(struct udphdr* udp, u32 src_ip, u32 dst_ip, u16 udplen)
 {
     (void) udp;
     (void) src_ip;
@@ -45,7 +45,7 @@ always_inline int udp_audit_checksum(struct udphdr* udp, u32 src_ip, u32 dst_ip,
     // return calc_csum == rcvd_csum;
 }
 
-always_inline int udp_audit(struct udphdr* udp, u32 src_ip, u32 dst_ip, u16 udplen)
+dqdk_always_inline int udp_audit(struct udphdr* udp, u32 src_ip, u32 dst_ip, u16 udplen)
 {
     // printf("ntohs(udp->len): %d != udplen %d\n", ntohs(udp->len), udplen);
     if (ntohs(udp->len) != udplen || !udp_audit_checksum(udp, src_ip, dst_ip, udplen)) {
@@ -63,7 +63,7 @@ struct pktgen_hdr {
     u64 ts_nano;
 };
 
-always_inline void* memset32_htonl(void* dest, u32 val, u32 size)
+dqdk_always_inline void* memset32_htonl(void* dest, u32 val, u32 size)
 {
     u32* ptr = (u32*)dest;
     u32 i;
@@ -80,7 +80,7 @@ always_inline void* memset32_htonl(void* dest, u32 val, u32 size)
     return dest;
 }
 
-always_inline void udp_create_frame(u8* pkt_data, u8* daddr, u8* saddr, u16 pktsize)
+dqdk_always_inline void udp_create_frame(u8* pkt_data, u8* daddr, u8* saddr, u16 pktsize)
 {
     struct pktgen_hdr* pktgen_hdr;
     struct udphdr* udp_hdr;

@@ -12,9 +12,9 @@ if [ "$NIC" == "" ]; then
 fi
 shift
 
-DQDK_MODE="-M waveform"
+DQDK_MODE="-m waveform -d 1500"
 if [ "$MODE" == "energy-histo" ]; then
-    DQDK_MODE="-M energy-histo"
+    DQDK_MODE="-m energy-histo"
 fi
 shift
 
@@ -40,7 +40,7 @@ PERF_EV="context-switches,cpu-migrations,cycles,mem-loads,mem-stores,ref-cycles,
 POWER_EV="power/energy-ram/,power/energy-pkg/"
 
 pushd ${DIR}/src
-#CMD="perf stat -e $PERF_EV ./dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G -w $DQDK_MODE"
+# CMD="perf record -e $PERF_EV ./dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
 [[ "$DEBUG" == "debug" ]] && DEBUG_ARG="-D" || DEBUG_ARG=
 CMD="./dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
 echo "Executing DQDK Command is: $CMD"

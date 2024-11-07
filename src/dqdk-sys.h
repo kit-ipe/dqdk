@@ -6,17 +6,25 @@
 #include <math.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
 #include <linux/mman.h>
+#include <linux/ethtool.h>
+#include <linux/sockios.h>
 #include <ctype.h>
 #include <limits.h>
 #include <time.h>
+#include <net/if.h>
 
 #include "dlog.h"
 #include "ctypes.h"
 
 #define HUGEPAGE_2MB_SIZE 2097152
-#define HUGETLB_PATH "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
-#define HUGETLB_CALC(size) ((u32)ceil(size / HUGEPAGE_2MB_SIZE))
+#define HUGEPAGE_1GB_SIZE 1073741824
+#define HUGETLB_PATH_2MB "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
+#define HUGETLB_PATH_1GB "/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages"
+#define HUGETLB_CALC_2MB(size) ((u32)ceil(size / HUGEPAGE_2MB_SIZE))
+#define HUGETLB_CALC_1GB(size) ((u32)ceil(size / HUGEPAGE_1GB_SIZE))
+
 #define INT_BUFFER 100
 #define STRING_BUFFER 1024
 
@@ -97,11 +105,24 @@ int nic_numa_node(const char* ifname)
     return sys_read_uint(ifnuma);
 }
 
+typedef enum {
+    HUGE_PAGE_2MB = MAP_HUGE_2MB,
+    HUGE_PAGE_1GB = MAP_HUGE_1GB,
+} huge_page_size_t;
+
 // get NUMA node huge pages
-char* get_numa_hugepages_path(int numanode)
+char* get_numa_hugepages_path(int numanode, huge_page_size_t pagesz)
 {
     char* path = calloc(1, PATH_MAX);
-    sprintf(path, "/sys/devices/system/node/node%d/hugepages/hugepages-2048kB/nr_hugepages", numanode);
+    if (pagesz == HUGE_PAGE_2MB)
+        sprintf(path, "/sys/devices/system/node/node%d/hugepages/hugepages-2048kB/nr_hugepages", numanode);
+    else if (pagesz == HUGE_PAGE_1GB)
+        sprintf(path, "/sys/devices/system/node/node%d/hugepages/hugepages-1048576kB/nr_hugepages", numanode);
+    else {
+        free(path);
+        path = NULL;
+    }
+
     return path;
 }
 
@@ -110,43 +131,47 @@ int reserve_hugepages(const char* path, int nb_hugepages)
     return sys_write_int(path, nb_hugepages);
 }
 
-int set_hugepages(int device_numanode, int howmany)
+int set_hugepages(int device_numanode, int howmany, huge_page_size_t pagesz)
 {
     char* path;
     int ret;
 
     if (device_numanode == -1) {
-        return reserve_hugepages(HUGETLB_PATH, howmany);
+        char* hgpg_path = pagesz == HUGE_PAGE_2MB ? HUGETLB_PATH_2MB : HUGETLB_PATH_1GB;
+        return reserve_hugepages(hgpg_path, howmany);
     }
 
-    path = get_numa_hugepages_path(device_numanode);
+    path = get_numa_hugepages_path(device_numanode, pagesz);
     ret = reserve_hugepages(path, howmany);
     free(path);
     return ret;
 }
 
-int get_hugepages(int device_numanode)
+int get_hugepages(int device_numanode, huge_page_size_t pagesz)
 {
     int ret;
     char* path;
 
     if (device_numanode == -1) {
-        return sys_read_uint(HUGETLB_PATH);
+        char* hgpg_path = pagesz == HUGE_PAGE_2MB ? HUGETLB_PATH_2MB : HUGETLB_PATH_1GB;
+        return sys_read_uint(hgpg_path);
     }
 
-    path = get_numa_hugepages_path(device_numanode);
+    path = get_numa_hugepages_path(device_numanode, pagesz);
     ret = sys_read_uint(path);
     free(path);
     return ret;
 }
 
-u8* huge_malloc(int devicenode, u64 size)
+u8* huge_malloc(int devicenode, u64 size, huge_page_size_t pagesz)
 {
-    int needed_hgpg = get_hugepages(devicenode) + HUGETLB_CALC(size);
-    set_hugepages(devicenode, needed_hgpg);
+    printf("huge malloc size=%llu\n", size);
+    int additionalsz = pagesz == HUGE_PAGE_2MB ? HUGETLB_CALC_2MB(size) : HUGETLB_CALC_1GB(size);
+    int needed_hgpg = get_hugepages(devicenode, pagesz) + additionalsz;
+    set_hugepages(devicenode, needed_hgpg, pagesz);
 
     void* map = mmap(NULL, size, PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB, -1, 0);
+        MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | pagesz, -1, 0);
 
     if (map == MAP_FAILED) {
         dlog_error2("huge_malloc", (int)(u64)map);
@@ -247,6 +272,31 @@ int cpu_smt_sibling(int cpu)
 exit:
     free(siblings);
     return isibling;
+}
+
+int dqdk_get_link_speed(const char* iface)
+{
+    int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0)
+        return -1;
+
+    struct ifreq ifr;
+    struct ethtool_cmd edata;
+
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, iface, IFNAMSIZ);
+    ifr.ifr_data = (caddr_t)&edata;
+
+    edata.cmd = ETHTOOL_GSET;
+
+    if (ioctl(sockfd, SIOCETHTOOL, &ifr) == -1) {
+        close(sockfd);
+        return -1;
+    }
+
+    close(sockfd);
+
+    return (edata.speed_hi << 16) | edata.speed;
 }
 
 #endif
