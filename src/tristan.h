@@ -41,6 +41,12 @@ typedef struct listwave listwave_t;
 #define TILES_COUNT 9
 #define CHNLS_COUNT (CHNLS_1TILE * TILES_COUNT)
 
+typedef enum {
+    TRISTAN_MODE_WAVEFORM,
+    TRISTAN_MODE_LISTWAVE,
+    TRISTAN_MODE_ENERGYHISTO,
+} tristan_mode_t;
+
 typedef struct {
     u32 histograms[HISTO_COUNT][HISTO_BINS];
 } chnl_t;
@@ -55,6 +61,7 @@ typedef struct {
     u8* head;
     u64 bulk_size;
     u64 max_bulk_size;
+    tristan_mode_t mode;
 } tristan_private_t;
 
 #define TRISTAN_HISTO_SZ (sizeof(tristan_histo_t))
@@ -67,13 +74,7 @@ typedef struct {
 #error "Unsupported Endianess"
 #endif
 
-typedef enum {
-    TRISTAN_MODE_WAVEFORM,
-    TRISTAN_MODE_LISTWAVE,
-    TRISTAN_MODE_ENERGYHISTO,
-} tristan_mode_t;
-
-static dqdk_always_inline int tristan_daq_waveform(tristan_private_t* private, xsk_info_t* xsk, u8* data, int datalen)
+static dqdk_always_inline int tristan_daq_waveform(tristan_private_t* private, dqdk_worker_t* xsk, u8* data, int datalen)
 {
     (void)xsk;
     u8* head = atomic_fetch_add_explicit(&private->head, datalen, memory_order_relaxed);
@@ -82,7 +83,7 @@ static dqdk_always_inline int tristan_daq_waveform(tristan_private_t* private, x
     return -1;
 }
 
-dqdk_always_inline int tristan_daq_energyhisto(tristan_private_t* private, xsk_info_t* xsk, u8* data, int datalen)
+dqdk_always_inline int tristan_daq_energyhisto(tristan_private_t* private, dqdk_worker_t* xsk, u8* data, int datalen)
 {
     energy_evt_t* evts = (energy_evt_t*)data;
     int nbevts = datalen / TRISTAN_HISTO_EVT_SZ;

@@ -165,11 +165,7 @@ int get_hugepages(int device_numanode, huge_page_size_t pagesz)
 
 u8* huge_malloc(int devicenode, u64 size, huge_page_size_t pagesz)
 {
-    printf("huge malloc size=%llu\n", size);
-    int additionalsz = pagesz == HUGE_PAGE_2MB ? HUGETLB_CALC_2MB(size) : HUGETLB_CALC_1GB(size);
-    int needed_hgpg = get_hugepages(devicenode, pagesz) + additionalsz;
-    set_hugepages(devicenode, needed_hgpg, pagesz);
-
+    (void) devicenode;
     void* map = mmap(NULL, size, PROT_READ | PROT_WRITE,
         MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | pagesz, -1, 0);
 
@@ -237,13 +233,11 @@ interrupts_t* nic_get_interrupts(char* irqstr, u32 nprocs)
         idx++;
     }
 
-    if (line != NULL) {
+    if (line != NULL)
         free(line);
-    }
 
-    if (fp != NULL) {
+    if (fp != NULL)
         pclose(fp);
-    }
 
     return intrpts;
 }

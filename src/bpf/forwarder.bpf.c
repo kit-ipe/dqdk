@@ -82,14 +82,6 @@ int forward(struct xdp_md* ctx)
         return XDP_PASS;
     }
 
-    // Sometimes it is control data but not using the control port?
-    // This was developed as a workaround for the scripts in tristan-scripts
-    // FIXME: to be removed later on whence the TRISTAN control is ready
-    // if (udp->len != expected_udp_data_sz) {
-    //     bpf_printk("XDP_PASS: %d - UDP Len %d\n", __LINE__, bpf_ntohs(udp->len));
-    //     return XDP_PASS;
-    // }
-
     if (debug)
         bpf_printk("Forwarding | SRC Port=%d | DST Port=%d | LEN=%u |\n", bpf_htons(udp->source), bpf_htons(udp->dest), bpf_htons(udp->len));
 

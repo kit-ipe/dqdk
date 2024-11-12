@@ -18,9 +18,8 @@ if [ "$MODE" == "energy-histo" ]; then
 fi
 shift
 
-DIR=`dirname $0`
-echo $DIR
-source ${DIR}/scripts/mlx5-optimize.sh $NIC $Q
+xdp-loader unload --all $NIC
+source mlx5-optimize.sh $NIC $Q
 
 pci=`ethtool -i $NIC | grep 'bus-info:' | sed 's/bus-info: //'`
 
@@ -34,18 +33,16 @@ else
     ethtool -N $NIC rx-flow-hash udp4 sdfn
 fi
 
-${DIR}/scripts/mlx5-rx-dbg.sh $NIC | tee ethtool.log &
+mlx5-rx-dbg.sh $NIC | tee $(pwd)/ethtool.log &
 
 PERF_EV="context-switches,cpu-migrations,cycles,mem-loads,mem-stores,ref-cycles,instructions,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses,dTLB-load-misses,dTLB-loads,dTLB-store-misses,dTLB-stores,iTLB-load-misses,branch-instructions,branch-misses,bus-cycles"
 POWER_EV="power/energy-ram/,power/energy-pkg/"
 
-pushd ${DIR}/src
 # CMD="perf record -e $PERF_EV ./dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
 [[ "$DEBUG" == "debug" ]] && DEBUG_ARG="-D" || DEBUG_ARG=
-CMD="./dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
+CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
 echo "Executing DQDK Command is: $CMD"
 
 $CMD
-popd
 
 pkill mlx5-rx-dbg.sh
