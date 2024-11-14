@@ -65,7 +65,7 @@ def stop_daq(conn):
 
 if __name__ == '__main__':
     host = sys.argv[1]
-    daq_conn = start_daq(host, 'ens106np0', 'raw', '5001-5010')
+    daq_conn = start_daq(host, 'ens106np0', 'waveform', '5001-5010')
     if daq_conn:
         i = 0
         while i < 2:

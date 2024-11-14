@@ -69,6 +69,8 @@ dkms.conf
 # Project-specific
 dqdk
 *.ll
+*.out
+*.err
 xdpsock*
 *.ipynb
 *.csv

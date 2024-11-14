@@ -3,7 +3,7 @@
 
 #include <netinet/ip.h>
 
-#include "../dqdk.h"
+#include "../ctypes.h"
 #include "tcpip/inet_csum.h"
 
 #define ip4_get_header_size(hdr) (((struct iphdr*)hdr)->ihl * 4)
@@ -19,12 +19,10 @@ dqdk_always_inline int ip4_audit(struct iphdr* hdr, u16 actual_pkt_len)
 {
     (void)hdr;
     (void)actual_pkt_len;
-    // u16 len = ntohs(hdr->tot_len);
-    // // printf("len %hu - actual_pkt_len %d\n", len, actual_pkt_len);
-    // //
-    // if (len != actual_pkt_len || !ip4_audit_checksum(hdr)) {
-    //     return 0;
-    // }
+    u16 len = ntohs(hdr->tot_len);
+    if (len != actual_pkt_len || !ip4_audit_checksum(hdr)) {
+        return 0;
+    }
 
     return 1;
 }

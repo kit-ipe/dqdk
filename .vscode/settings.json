@@ -8,7 +8,10 @@
         "random": "c",
         "algorithm": "c",
         "atomic": "c",
-        "sstream": "c"
+        "sstream": "c",
+        "array": "c",
+        "string_view": "c",
+        "initializer_list": "c"
     },
     "C_Cpp.errorSquiggles": "disabled",
     "[python]": {

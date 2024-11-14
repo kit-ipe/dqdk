@@ -1,7 +1,0 @@
-No XDP program loaded on ens106np0
-Synchronizing state of irqbalance.service with SysV service script with /lib/systemd/systemd-sysv-install.
-Executing: /lib/systemd/systemd-sysv-install disable irqbalance
-libbpf: elf: skipping unrecognized data section(7) xdp_metadata
-libbpf: elf: skipping unrecognized data section(7) xdp_metadata
-libbpf: elf: skipping unrecognized data section(7) xdp_metadata
-libbpf: elf: skipping unrecognized data section(7) xdp_metadata

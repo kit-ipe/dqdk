@@ -1,7 +1,8 @@
 #ifndef DQDK_IP4_ICMP_H
 #define DQDK_IP4_ICMP_H
 
-#include "../dqdk.h"
+#include "../ctypes.h"
+#include "../dlog.h"
 #include "tcpip/inet_csum.h"
 
 #include <net/ethernet.h>

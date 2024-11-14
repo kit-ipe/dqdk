@@ -38,7 +38,7 @@
 #define popcountl(x) __builtin_popcountl(x)
 #define log2l(x) (31 - __builtin_clz(x))
 
-struct xsk_stat {
+typedef struct {
     u64 rcvd_frames;
     u64 rcvd_pkts;
     u64 fail_polls;
@@ -57,7 +57,7 @@ struct xsk_stat {
     u64 tristan_histogram_evts;
     u64 tristan_histogram_lost_evts;
     struct xdp_statistics xstats;
-};
+} dqdk_stats_t;
 
 typedef struct {
     struct xsk_umem* umem;
@@ -77,7 +77,7 @@ typedef struct {
     struct xsk_ring_prod tx;
     struct xsk_ring_cons rx;
     umem_info_t* umem_info;
-    struct xsk_stat stats;
+    dqdk_stats_t stats;
     void* private;
     void* dedicated_private;
     cpu_set_t cset;
@@ -101,7 +101,7 @@ typedef struct {
     u32 nbqueues;
     dqdk_worker_t** workers;
     u8 umem_flags;
-    u32 umem_size;
+    u64 umem_size;
     u32 batch_size;
     u8 needs_wakeup;
     u8 busy_poll;
@@ -125,7 +125,7 @@ typedef struct {
     dqdk_status_t status;
 } dqdk_ctx_t;
 
-dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u32 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u8 verbose, u32 packetsz, u8 debug, u8 hyperthreading, void* sharedprivate);
+dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u8 verbose, u32 packetsz, u8 debug, u8 hyperthreading, void* sharedprivate);
 u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, huge_page_size_t pagesz);
 int dqdk_huge_free(dqdk_ctx_t* ctx, u8* mem, u64 size);
 int dqdk_add_port(dqdk_ctx_t* ctx, u16 port);

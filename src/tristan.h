@@ -80,7 +80,7 @@ static dqdk_always_inline int tristan_daq_waveform(tristan_private_t* private, d
     u8* head = atomic_fetch_add_explicit(&private->head, datalen, memory_order_relaxed);
     memcpy(head, data, datalen);
 
-    return -1;
+    return 0;
 }
 
 dqdk_always_inline int tristan_daq_energyhisto(tristan_private_t* private, dqdk_worker_t* xsk, u8* data, int datalen)

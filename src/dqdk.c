@@ -54,13 +54,23 @@
 
 #define UMEM_FLAGS_USE_HGPG (1 << 0)
 #define UMEM_FLAGS_UNALIGNED (1 << 1)
-#define LARGE_MEMSZ ((u64)100 * 1024 * 1024 * 1024)
 
 volatile u32 break_flag = 0;
 
 static void* umem_buffer_create(u32 size, u8 flags, int driver_numa)
 {
-    return flags & UMEM_FLAGS_USE_HGPG ? huge_malloc(driver_numa, size, HUGE_PAGE_2MB) : mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* mem = NULL;
+    if (flags & UMEM_FLAGS_USE_HGPG)
+        mem = huge_malloc(driver_numa, size, HUGE_PAGE_2MB);
+    else
+        mem = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    if (mlock(mem, size) < 0) {
+        munmap(mem, size);
+        mem = NULL;
+    }
+
+    return mem;
 }
 
 static umem_info_t* umem_info_create(u32 size, u8 flags, int driver_numa)
@@ -132,7 +142,7 @@ static int xsk_configure(dqdk_ctx_t* ctx, dqdk_worker_t* xsk)
     ret = xsk_socket__create_shared(&xsk->socket, ctx->ifname, xsk->queue_id,
         xsk->umem_info->umem, &xsk->rx, &xsk->tx, fq, cq, &xsk_config);
     if (ret) {
-        dlog_error2("xsk_socket__create", ret);
+        dlog_error2("xsk_socket__create_shared", ret);
         return ret;
     }
 
@@ -192,21 +202,21 @@ dqdk_always_inline u8* get_udp_payload(dqdk_worker_t* xsk, u8* buffer, u32 len, 
     struct ethhdr* frame = (struct ethhdr*)buffer;
     u16 ethertype = ntohs(frame->h_proto);
 
-    if (ethertype != ETH_P_IP) {
+    if (dqdk_unlikely(ethertype != ETH_P_IP)) {
         return NULL;
     }
 
     ++xsk->stats.rcvd_pkts;
     struct iphdr* packet = (struct iphdr*)(frame + 1);
-    if (packet->version != 4) {
+    if (dqdk_unlikely(packet->version != 4)) {
         return NULL;
     }
 
-    if (packet->protocol != IPPROTO_UDP) {
+    if (dqdk_unlikely(packet->protocol != IPPROTO_UDP)) {
         return NULL;
     }
 
-    if (!ip4_audit(packet, len - sizeof(struct ethhdr))) {
+    if (dqdk_unlikely(!ip4_audit(packet, len - sizeof(struct ethhdr)))) {
         ++xsk->stats.invalid_ip_pkts;
         return NULL;
     }
@@ -215,7 +225,7 @@ dqdk_always_inline u8* get_udp_payload(dqdk_worker_t* xsk, u8* buffer, u32 len, 
     u32 udplen = ntohs(packet->tot_len) - iphdrsz;
     struct udphdr* udp = (struct udphdr*)(((u8*)packet) + iphdrsz);
 
-    if (!udp_audit(udp, packet->saddr, packet->daddr, udplen)) {
+    if (dqdk_unlikely(!udp_audit(udp, packet->saddr, packet->daddr, udplen))) {
         xsk->stats.invalid_udp_pkts++;
         return NULL;
     }
@@ -224,14 +234,42 @@ dqdk_always_inline u8* get_udp_payload(dqdk_worker_t* xsk, u8* buffer, u32 len, 
     return (u8*)(udp + 1);
 }
 
+static dqdk_always_inline u8* prefetch_frame(dqdk_worker_t* xsk, int idx)
+{
+    u64 addr = xsk_ring_cons__rx_desc(&xsk->rx, idx)->addr;
+    u8* frame = xsk_umem__get_data(xsk->umem_info->buffer, addr);
+    dqdk_prefetch(frame);
+
+    return frame;
+}
+
+static dqdk_always_inline void process_frame(dqdk_worker_t* xsk, int idx)
+{
+    u32 datalen = 0;
+    u64 addr = xsk_ring_cons__rx_desc(&xsk->rx, idx)->addr;
+    u32 len = xsk_ring_cons__rx_desc(&xsk->rx, idx)->len;
+    u8* frame = xsk_umem__get_data(xsk->umem_info->buffer, addr);
+    u8* data = get_udp_payload(xsk, frame, len, &datalen);
+
+    tristan_private_t* private = (tristan_private_t*)xsk->private;
+    if (dqdk_unlikely(datalen == 0 || data == NULL))
+        return;
+
+    if (private->mode == TRISTAN_MODE_WAVEFORM)
+        tristan_daq_waveform(private, xsk, data, datalen);
+    else if (private->mode == TRISTAN_MODE_ENERGYHISTO)
+        tristan_daq_energyhisto(private, xsk, data, datalen);
+}
+
 static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
 {
+    u32 rem = 0;
     umem_info_t* umem = xsk->umem_info;
-    u32 idx_rx = 0, idx_fq = 0, datalen = 0;
+    u32 idx_rx = 0, idx_fq = 0;
     struct xsk_ring_prod* fq = &umem->fq0;
 
     int rcvd = xsk_ring_cons__peek(&xsk->rx, xsk->batch_size, &idx_rx);
-    if (!rcvd) {
+    if (dqdk_unlikely(!rcvd)) {
         /**
          * wakeup by issuing a recvfrom if needs wakeup
          * or if busy poll was specified. If SO_PREFER_BUSY_POLL is specified
@@ -261,28 +299,20 @@ static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
 
     ++xsk->stats.rx_successful_fills;
 
-    for (int i = 0; i < rcvd; ++i) {
-        u64 addr = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->addr;
-        u32 len = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->len;
-        u8* frame = xsk_umem__get_data(umem->buffer, addr);
-        u8* data = get_udp_payload(xsk, frame, len, &datalen);
+    rem = rcvd;
 
-        tristan_private_t* private = (tristan_private_t*)xsk->private;
-        if (datalen != 0 && data != NULL) {
-            switch (private->mode) {
-            case TRISTAN_MODE_WAVEFORM:
-                tristan_daq_waveform(private, xsk, data, datalen);
-                break;
-            case TRISTAN_MODE_ENERGYHISTO:
-                tristan_daq_energyhisto(private, xsk, data, datalen);
-                break;
-            default:
-                break;
-            }
+    prefetch_frame(xsk, 0);
+
+    while (dqdk_likely(rem > 0)) {
+        if (rem > 2) {
+            prefetch_frame(xsk, idx_rx + 1);
         }
 
-        ++idx_rx;
-        ++idx_fq;
+        process_frame(xsk, idx_rx);
+
+        idx_rx += 1;
+        idx_fq += 1;
+        rem -= 1;
     }
 
     xsk->stats.rcvd_frames += rcvd;
@@ -297,7 +327,7 @@ static int run_daq(dqdk_worker_t* xsk)
     u64 t0, t1;
 
     t0 = clock_nsecs();
-    while (!break_flag) {
+    while (dqdk_unlikely(!break_flag)) {
         do_daq(xsk);
     }
     t1 = clock_nsecs();
@@ -336,7 +366,7 @@ int infoprint(enum libbpf_print_level level,
 
 #define AVG_PPS(pkts, rt) (pkts * 1e9 / rt)
 
-void stats_dump(struct xsk_stat* stats)
+static void stats_dump(dqdk_stats_t* stats)
 {
     printf("    Total runtime (ns):       %llu\n"
            "    Received Frames:          %llu\n"
@@ -382,7 +412,7 @@ void stats_dump(struct xsk_stat* stats)
         stats->tristan_histogram_evts, stats->tristan_histogram_lost_evts);
 }
 
-void xsk_stats_dump(dqdk_worker_t* xsk)
+static void xsk_stats_dump(dqdk_worker_t* xsk)
 {
     printf("XSK %u on Queue %u Statistics:\n", xsk->index, xsk->queue_id);
     stats_dump(&xsk->stats);
@@ -646,6 +676,7 @@ static int dqdk_ctx_free(dqdk_ctx_t* ctx)
 int dqdk_waitall(dqdk_ctx_t* ctx)
 {
     dqdk_worker_t* worker;
+    break_flag = 1;
 
     if (!ctx)
         return -1;
@@ -653,18 +684,15 @@ int dqdk_waitall(dqdk_ctx_t* ctx)
     if (ctx->status > DQDK_STATUS_NONE) {
         for (u32 _i = 0; _i < ctx->nbqueues; _i++) {
             worker = ctx->workers[_i];
-            if (worker) {
+            if (worker)
                 pthread_join(worker->thread, NULL);
-                dqdk_worker_free(worker);
-                ctx->workers[_i] = NULL;
-            }
         }
     }
 
     return 0;
 }
 
-dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u32 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u8 verbose, u32 packetsz, u8 debug, u8 hyperthreading, void* sharedprivate)
+dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u8 verbose, u32 packetsz, u8 debug, u8 hyperthreading, void* sharedprivate)
 {
     struct rlimit rlim = { RLIM_INFINITY, RLIM_INFINITY };
     dqdk_ctx_t* ctx = calloc(1, sizeof(dqdk_ctx_t));
@@ -845,7 +873,17 @@ u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, huge_page_size_t pagesz)
     int additional_pages = pagesz == HUGE_PAGE_2MB ? HUGETLB_CALC_2MB(size) : HUGETLB_CALC_1GB(size);
     int needed_hgpg = get_hugepages(ctx->numa_node, pagesz) + additional_pages;
     set_hugepages(ctx->numa_node, needed_hgpg, pagesz);
-    return huge_malloc(ctx->numa_node, size, pagesz);
+    u8* mem = huge_malloc(ctx->numa_node, size, pagesz);
+    if (!mem)
+        goto exit;
+
+    if (mlock(mem, size) < 0) {
+        dqdk_huge_free(ctx, mem, size);
+        mem = NULL;
+    }
+
+exit:
+    return mem;
 }
 
 int dqdk_huge_free(dqdk_ctx_t* ctx, u8* mem, u64 size)
@@ -856,18 +894,35 @@ int dqdk_huge_free(dqdk_ctx_t* ctx, u8* mem, u64 size)
 
 int dqdk_ctx_fini(dqdk_ctx_t* ctx)
 {
+    dqdk_worker_t* worker;
     break_flag = 1;
-    return dqdk_waitall(ctx) || dqdk_ctx_free(ctx);
+
+    if (!ctx)
+        return -1;
+
+    if (ctx->status > DQDK_STATUS_NONE) {
+        for (u32 _i = 0; _i < ctx->nbqueues; _i++) {
+            worker = ctx->workers[_i];
+            if (worker) {
+                dqdk_worker_free(worker);
+                ctx->workers[_i] = NULL;
+            }
+        }
+    }
+
+    return dqdk_ctx_free(ctx);
 }
 
 void dqdk_dump_stats(dqdk_ctx_t* ctx)
 {
     dqdk_worker_t* worker;
-    struct xsk_stat avg_stats;
+    dqdk_stats_t avg_stats;
+
     if (ctx == NULL)
         return;
 
     memset(&avg_stats, 0, sizeof(avg_stats));
+
     for (u32 i = 0; i < ctx->nbqueues; i++) {
         worker = ctx->workers[i];
         xsk_stats_dump(worker);
@@ -1106,23 +1161,28 @@ int main(int argc, char** argv)
     }
 
     int ret = dqdk_controller_wait(controller, ctx);
+    // FIXME: in case the connection closed we need to run some timer and close after that
     if (ret < 0)
-        // FIXME: in case the connection closed we need to run some timer and close after that
         goto cleanup;
-    else
-        dlog_info("Closing...");
 
-    if (private.histo) {
-        dqdk_blk_status_t stats = dqdk_blk_dump("tristan-histo.bin", FILE_BSIZE, TRISTAN_HISTO_SZ, private.histo);
-        if (stats.status != 0)
-            dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
-    }
+    dlog_info("Closing...");
 
-    if (private.bulk && private.bulk_size != 0) {
-        dqdk_blk_status_t stats = dqdk_blk_dump("tristan-raw.bin", FILE_BSIZE, private.head - private.bulk, private.bulk);
-        if (stats.status != 0)
-            dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
-    }
+    // if (private.histo) {
+    //     dlog_info("Saving TRISTAN Histogram, this may take a while...");
+    //     dqdk_blk_status_t stats = dqdk_blk_dump("tristan-histo.bin", FILE_BSIZE, TRISTAN_HISTO_SZ, private.histo);
+    //     if (stats.status != 0)
+    //         dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
+    // }
+
+    // if (private.bulk && private.head - private.bulk != 0) {
+    //     dlog_info("Saving TRISTAN Waveform, this may take a while...");
+    //     dqdk_blk_status_t stats = dqdk_blk_dump("tristan-raw.bin", FILE_BSIZE, private.head - private.bulk, private.bulk);
+    //     if (stats.status != 0)
+    //         dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
+    // }
+
+    dqdk_waitall(ctx);
+    dqdk_dump_stats(ctx);
 
 cleanup:
     if (dqdk_controller_closed(controller) < 0)

@@ -4,7 +4,7 @@ MODE=$2
 PORTS=$3
 DEBUG=$4
 
-Q=2
+Q=3
 if [ "$NIC" == "" ]; then
     echo "NIC Name is not specified"
     echo "$0 <NIC>"
@@ -12,7 +12,7 @@ if [ "$NIC" == "" ]; then
 fi
 shift
 
-DQDK_MODE="-m waveform -d 1500"
+DQDK_MODE="-m waveform -d 4000"
 if [ "$MODE" == "energy-histo" ]; then
     DQDK_MODE="-m energy-histo"
 fi
@@ -35,10 +35,9 @@ fi
 
 mlx5-rx-dbg.sh $NIC | tee $(pwd)/ethtool.log &
 
-PERF_EV="context-switches,cpu-migrations,cycles,mem-loads,mem-stores,ref-cycles,instructions,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses,dTLB-load-misses,dTLB-loads,dTLB-store-misses,dTLB-stores,iTLB-load-misses,branch-instructions,branch-misses,bus-cycles"
+PERF_EV="context-switches,cpu-migrations,cycles,mem-loads,mem-stores,ref-cycles,instructions,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses,dTLB-load-misses,dTLB-loads,dTLB-store-misses,dTLB-stores,iTLB-load-misses,branches,branch-instructions,branch-misses,bus-cycles,page-faults,slots"
 POWER_EV="power/energy-ram/,power/energy-pkg/"
-
-# CMD="perf record -e $PERF_EV ./dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
+# CMD="perf stat -e $PERF_EV ./dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
 [[ "$DEBUG" == "debug" ]] && DEBUG_ARG="-D" || DEBUG_ARG=
 CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
 echo "Executing DQDK Command is: $CMD"
