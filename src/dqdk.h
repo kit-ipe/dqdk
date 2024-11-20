@@ -27,16 +27,20 @@
 #include "dqdk-controller.h"
 
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
+#define MIN(x, y) (((x) < (y)) ? (x) : (y))
+#define AVG(x, y) (((y) == 0) ? 0 : ((x) * 1.0 / (y)))
 
-#define DQDK_RCV_POLL (1 << 0)
-#define DQDK_RCV_RTC (1 << 1)
-#define IS_THREADED(nbqs) (nbqs != 1)
-#define DQDK_DURATION 3
 #define MAX_QUEUES 16
 
 #define is_power_of_2(x) ((x != 0) && ((x & (x - 1)) == 0))
 #define popcountl(x) __builtin_popcountl(x)
 #define log2l(x) (31 - __builtin_clz(x))
+
+typedef struct {
+    u64 sum;
+    u64 min;
+    u64 max;
+} latency_t;
 
 typedef struct {
     u64 rcvd_frames;
@@ -46,16 +50,11 @@ typedef struct {
     u64 rx_empty_polls;
     u64 rx_fill_fail_polls;
     u64 rx_successful_fills;
-    u64 tx_successful_fills;
     u64 invalid_ip_pkts;
     u64 invalid_udp_pkts;
     u64 runtime;
-    u64 tx_wakeup_sendtos;
-    u64 sent_frames;
-    u64 tristan_outoforder;
-    u64 tristan_dups;
-    u64 tristan_histogram_evts;
-    u64 tristan_histogram_lost_evts;
+    latency_t queuing_latency;
+    latency_t total_latency;
     struct xdp_statistics xstats;
 } dqdk_stats_t;
 
@@ -125,7 +124,7 @@ typedef struct {
     dqdk_status_t status;
 } dqdk_ctx_t;
 
-dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u8 verbose, u32 packetsz, u8 debug, u8 hyperthreading, void* sharedprivate);
+dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u32 packetsz, u8 debug, u8 hyperthreading, void* sharedprivate);
 u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, huge_page_size_t pagesz);
 int dqdk_huge_free(dqdk_ctx_t* ctx, u8* mem, u64 size);
 int dqdk_add_port(dqdk_ctx_t* ctx, u16 port);

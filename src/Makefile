@@ -11,7 +11,7 @@ USER_LIBS       := -lpthread -lnuma -lm -luring
 MAN_PAGE        :=
 SCRIPTSDIR      := /usr/local/sbin
 USER_DEFINES    += -D_GNU_SOURCE -I$(realpath .) -O3 -g -march=native
-CFLAGS          += -I$(realpath ../xdp-tools/headers/) -I$(realpath ../xdp-tools/lib/libbpf/src) $(USER_DEFINES)
+CFLAGS          += $(USER_DEFINES)
 BPF_CFLAGS      += -I$(realpath .)
 
 include $(LIB_DIR)/common.mk

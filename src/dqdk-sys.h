@@ -177,10 +177,10 @@ u8* huge_malloc(int devicenode, u64 size, huge_page_size_t pagesz)
     return (u8*)map;
 }
 
-u64 clock_nsecs()
+dqdk_always_inline u64 clock_nsecs()
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    clock_gettime(CLOCK_REALTIME, &ts);
     return ts.tv_sec * 1000000000UL + ts.tv_nsec;
 }
 

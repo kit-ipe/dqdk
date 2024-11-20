@@ -4,32 +4,33 @@ MODE=$2
 PORTS=$3
 DEBUG=$4
 
-Q=3
+Q=1
 if [ "$NIC" == "" ]; then
     echo "NIC Name is not specified"
     echo "$0 <NIC>"
     exit
 fi
-shift
 
 DQDK_MODE="-m waveform -d 4000"
 if [ "$MODE" == "energy-histo" ]; then
     DQDK_MODE="-m energy-histo"
 fi
-shift
+
+nic_numa=$(cat /sys/class/net/$NIC/device/numa_node)
+echo 0 > /sys/devices/system/node/node${nic_numa}/hugepages/hugepages-2048kB/nr_hugepages
 
 xdp-loader unload --all $NIC
 source mlx5-optimize.sh $NIC $Q
+ethtool --set-priv-flags $NIC rx_cqe_compress on
 
 pci=`ethtool -i $NIC | grep 'bus-info:' | sed 's/bus-info: //'`
 
-INTR_STRING=$(cat /proc/interrupts | grep ${pci} | head -${Q} | awk '{printf "%s%s", sep, substr($1, 1, length($1)-1); sep=","} END{print ""}')
+INTR_STRING=$(cat /proc/interrupts | grep "mlx5_comp[0-9]*@pci:${pci}" | head -${Q} | awk '{printf "%s%s", sep, substr($1, 1, length($1)-1); sep=","} END{print ""}')
+    ethtool --set-priv-flags $NIC rx_cqe_compress off
 if [ $Q -eq 1 ]; then
     Q_STRING=0
-    ethtool --set-priv-flags $NIC rx_cqe_compress on
 else
     Q_STRING=0-$(($Q - 1))
-    ethtool --set-priv-flags $NIC rx_cqe_compress off
     ethtool -N $NIC rx-flow-hash udp4 sdfn
 fi
 
@@ -39,7 +40,7 @@ PERF_EV="context-switches,cpu-migrations,cycles,mem-loads,mem-stores,ref-cycles,
 POWER_EV="power/energy-ram/,power/energy-pkg/"
 # CMD="perf stat -e $PERF_EV ./dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
 [[ "$DEBUG" == "debug" ]] && DEBUG_ARG="-D" || DEBUG_ARG=
-CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
+CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -B -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
 echo "Executing DQDK Command is: $CMD"
 
 $CMD

@@ -31,8 +31,11 @@ struct {
     __uint(max_entries, MAX_PORTS);
 } accept_ports SEC(".maps");
 
-SEC("xdp/dqdk_forwarder")
-int forward(struct xdp_md* ctx)
+extern int bpf_xdp_metadata_rx_timestamp(const struct xdp_md* ctx,
+    __u64* timestamp) __ksym;
+
+SEC("xdp")
+int dqdk_forwarder(struct xdp_md* ctx)
 {
     void* data = (void*)(long)ctx->data;
     void* data_end = (void*)(long)ctx->data_end;
@@ -82,8 +85,17 @@ int forward(struct xdp_md* ctx)
         return XDP_PASS;
     }
 
-    if (debug)
+    if (debug) {
+        // if (data + sizeof(__u64) < data_end) {
+        //     int ret = bpf_xdp_metadata_rx_timestamp(ctx, (__u64*)data);
+        //     if (ret < 0) {
+        //         bpf_printk("bpf_xdp_metadata_rx_timestamp = %d\n", ret);
+        //         goto redirect;
+        //     }
+        // }
+// redirect:
         bpf_printk("Forwarding | SRC Port=%d | DST Port=%d | LEN=%u |\n", bpf_htons(udp->source), bpf_htons(udp->dest), bpf_htons(udp->len));
+    }
 
     return bpf_redirect_map(&xsks_map, ctx->rx_queue_index, XDP_DROP);
 }

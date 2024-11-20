@@ -34,7 +34,7 @@ lro off rx-udp_tunnel-port-offload off tx-checksum-ip-generic off \
 tx-scatter-gather off tx-vlan-stag-hw-insert off ntuple on rx-vlan-filter off \
 tx-gre-csum-segmentation off tx-tcp-mangleid-segmentation off txvlan off rx off \
 rxhash on tx-gre-segmentation off tx-tcp-segmentation off rx-all off rxvlan off \
-tx-gso-partial off tx-tcp6-segmentation off rx-checksumming off tx-checksumming off
+tx-gso-partial off tx-tcp6-segmentation off rx-checksumming off tx-checksumming off macsec-hw-offload off receive-hashing off
 ethtool --set-priv-flags $NIC rx_cqe_moder off rx_striding_rq off rx_no_csum_complete off xdp_tx_mpwqe off skb_tx_mpwqe off
 
 # read -p "Set PCI MaxReadReq to 1024? [y/n]..." -n 1 answer
@@ -55,10 +55,10 @@ sysctl -w vm.swappiness=0
 # IRQ affinity
 # numa_nodes=`cat /sys/devices/system/node/online`
 # if [ "0" = "$numa_nodes" ]; then
-    echo "Disabling irqbalance..."
-    systemctl disable irqbalance
-    systemctl stop irqbalance
-    irqbalance stop
+    # echo "Disabling irqbalance..."
+    # systemctl disable irqbalance
+    # systemctl stop irqbalance
+    # irqbalance stop
     # if [[ queues -eq 1 ]]; then
     #     set_irq_affinity_cpulist.sh 3 $NIC
     # else
@@ -100,6 +100,6 @@ sysctl -w vm.swappiness=0
 #     echo "Hyper-threading is disabled!"
 # fi
 
-echo "Disabling Real-time Throttling..."
+# echo "Disabling Real-time Throttling..."
 echo -1 > /proc/sys/kernel/sched_rt_runtime_us
-echo -1 > /proc/sys/kernel/sched_rt_period_us
+# echo -1 > /proc/sys/kernel/sched_rt_period_us

@@ -12,9 +12,14 @@ apt install clang llvm libelf-dev libpcap-dev gcc-multilib build-essential linux
 
 ```bash
 git clone --recursive https://github.com/kit-ipe/dqdk.git
-cd dqdk/src
+cd dqdk
+pushd xdp-tools/xdp-loader; make; sudo make install; popd
+cd src
 make
+sudo make install
 ```
+
+To uninstall run `sudo make uninstall` in `src`
 
 ## TRISTAN Results
 
