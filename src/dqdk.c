@@ -344,10 +344,11 @@ static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
         rem -= 1;
     }
 
-    xsk->stats.rcvd_frames += rcvd;
-
     xsk_ring_cons__release(&xsk->rx, rcvd);
     xsk_ring_prod__submit(fq, rcvd);
+
+    xsk->stats.rcvd_frames += rcvd;
+
     return 0;
 }
 
@@ -851,13 +852,14 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     }
 
     ctx->forwarder = forwarder__open();
-    ctx->forwarder->bss->expected_udp_data_sz = htons(packetsz);
     ctx->forwarder->bss->debug = debug;
 
-    bpf_program__set_ifindex(ctx->forwarder->progs.dqdk_forwarder, ctx->ifindex);
-    bpf_program__set_flags(ctx->forwarder->progs.dqdk_forwarder, BPF_F_XDP_DEV_BOUND_ONLY);
-    bpf_program__set_type(ctx->forwarder->progs.dqdk_forwarder, BPF_PROG_TYPE_XDP);
+    if (ctx->debug) {
+        bpf_program__set_ifindex(ctx->forwarder->progs.dqdk_forwarder, ctx->ifindex);
+        bpf_program__set_flags(ctx->forwarder->progs.dqdk_forwarder, BPF_F_XDP_DEV_BOUND_ONLY);
+    }
 
+    bpf_program__set_type(ctx->forwarder->progs.dqdk_forwarder, BPF_PROG_TYPE_XDP);
     ret = forwarder__load(ctx->forwarder);
     if (ret < 0) {
         dlog_error2("forwarder__load", ret);

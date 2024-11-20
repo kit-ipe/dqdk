@@ -14,7 +14,6 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-__u16 expected_udp_data_sz = 0;
 __u8 debug = 0;
 
 struct {
