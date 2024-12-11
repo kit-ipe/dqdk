@@ -89,7 +89,7 @@ dqdk_always_inline int tristan_daq_energyhisto(tristan_private_t* private, dqdk_
 
     for (int i = 0; i < nbevts; i++) {
         energy_evt_t evt = evts[i];
-        if (xsk->debug) {
+        if (xsk->debug_flags) {
             dlog_infov("Evnt %d: Energy=%u; TimeStamp=%llu; Channel=%d; Mask=%d\n", evt.id,
                 evt.energy, (u64)evt.timestamp, evt.channel, evt.mask);
         }

@@ -252,24 +252,29 @@ static dqdk_always_inline u8* prefetch_frame(dqdk_worker_t* xsk, int idx)
     return frame;
 }
 
+#define WORKER_LATENCY(worker, param, latency)                                                                                  \
+    do {                                                                                                                        \
+        (worker)->stats.param.sum += (latency);                                                                                 \
+        (worker)->stats.param.max = MAX((worker)->stats.param.max, (latency));                                                  \
+        if ((latency) > 0)                                                                                                      \
+            (worker)->stats.param.min = (worker)->stats.param.min == 0 ? (latency) : MIN((worker)->stats.param.min, (latency)); \
+        if ((worker)->debug_flags & DQDK_DEBUG_LATENCYDUMP)                                                                     \
+            (worker)->stats.param.raw[(worker)->stats.param.raw_idx++] = latency;                                               \
+    } while (0)
+
 static dqdk_always_inline void process_frame(dqdk_worker_t* xsk, int idx)
 {
-    // u64 latency = 0;
     u32 datalen = 0;
     u64 addr = xsk_ring_cons__rx_desc(&xsk->rx, idx)->addr;
     u32 len = xsk_ring_cons__rx_desc(&xsk->rx, idx)->len;
     u8* frame = xsk_umem__get_data(xsk->umem_info->buffer, addr);
     u8* data = get_udp_payload(xsk, frame, len, &datalen);
 
-    // if (xsk->debug) {
-    //     u64 t0 = *((u64*)frame); // Get hardware timestamp
-    //     u64 t1 = clock_nsecs();
-    //     latency = t1 - t0;
-    //     // printf("latency(%llu) = t1(%llu) - t0(%llu);\n", latency, t1, t0);
-    //     xsk->stats.queuing_latency.sum += latency;
-    //     xsk->stats.queuing_latency.min = xsk->stats.queuing_latency.min == 0 ? latency : MIN(xsk->stats.queuing_latency.min, latency);
-    //     xsk->stats.queuing_latency.max = MAX(xsk->stats.queuing_latency.max, latency);
-    // }
+    if (xsk->debug_flags && xsk->soft_timestamp != BAD_CLOCK) {
+        u64 t0 = *((u64*)frame); // Get hardware timestamp
+        s64 latency = xsk->soft_timestamp - t0;
+        WORKER_LATENCY(xsk, queuing_latency, latency);
+    }
 
     tristan_private_t* private = (tristan_private_t*)xsk->private;
     if (dqdk_unlikely(datalen == 0 || data == NULL))
@@ -279,15 +284,6 @@ static dqdk_always_inline void process_frame(dqdk_worker_t* xsk, int idx)
         tristan_daq_waveform(private, xsk, data, datalen);
     else if (private->mode == TRISTAN_MODE_ENERGYHISTO)
         tristan_daq_energyhisto(private, xsk, data, datalen);
-
-    // if (xsk->debug) {
-    //     u64 t0 = *((u64*)frame); // Get hardware timestamp from metadata
-    //     u64 t1 = clock_nsecs();
-    //     latency = t1 - t0;
-    //     xsk->stats.total_latency.sum += latency;
-    //     xsk->stats.total_latency.min = xsk->stats.total_latency.min == 0 ? latency : MIN(xsk->stats.total_latency.min, latency);
-    //     xsk->stats.total_latency.max = MAX(xsk->stats.total_latency.max, latency);
-    // }
 }
 
 static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
@@ -296,6 +292,9 @@ static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
     umem_info_t* umem = xsk->umem_info;
     u32 idx_rx = 0, idx_fq = 0;
     struct xsk_ring_prod* fq = &umem->fq0;
+
+    if (xsk->debug_flags)
+        xsk->soft_timestamp = clock_nsecs_real();
 
     int rcvd = xsk_ring_cons__peek(&xsk->rx, xsk->batch_size, &idx_rx);
     if (dqdk_unlikely(!rcvd)) {
@@ -349,6 +348,20 @@ static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
 
     xsk->stats.rcvd_frames += rcvd;
 
+    if (xsk->debug_flags && xsk->soft_timestamp != BAD_CLOCK) {
+        u64 postproc_ts = clock_nsecs_real();
+        if (postproc_ts != BAD_CLOCK) {
+            s64 latency = postproc_ts - xsk->soft_timestamp;
+            s64 thrsld = 5000000;
+            if (xsk->stats.rcvd_frames == 6500000) {
+                clock_nsleep(thrsld - latency);
+                postproc_ts = clock_nsecs_real();
+                latency = postproc_ts - xsk->soft_timestamp;
+            }
+            WORKER_LATENCY(xsk, processing_latency, latency);
+        }
+    }
+
     return 0;
 }
 
@@ -356,11 +369,11 @@ static int run_daq(dqdk_worker_t* xsk)
 {
     u64 t0, t1;
 
-    t0 = clock_nsecs();
+    t0 = clock_nsecs_mono();
     while (dqdk_unlikely(!break_flag)) {
         do_daq(xsk);
     }
-    t1 = clock_nsecs();
+    t1 = clock_nsecs_mono();
 
     socklen_t socklen = sizeof(struct xdp_statistics);
     xsk->stats.runtime = t1 - t0;
@@ -413,17 +426,17 @@ static void stats_dump(dqdk_stats_t* stats, u8 debug)
     printf("    X-XSK RX Invalid Descs:   %llu\n", stats->xstats.rx_invalid_descs);
     printf("    X-XSK RX Ring Full:       %llu\n", stats->xstats.rx_ring_full);
     if (debug) {
-        printf("    Queuing Latency:          AVG=%fns    MIN=%lluns    MAX=%lluns\n",
+        printf("    Queuing Latency:          AVG=%fns    MIN=%lldns    MAX=%lldns\n",
             AVG(stats->queuing_latency.sum, stats->rcvd_frames), stats->queuing_latency.min, stats->queuing_latency.max);
-        printf("    Total Latency:            AVG=%fns    MIN=%lluns    MAX=%lluns\n",
-            AVG(stats->total_latency.sum, stats->rcvd_frames), stats->total_latency.min, stats->total_latency.max);
+        printf("    Processing Latency:       AVG=%fns    MIN=%lldns    MAX=%lldns\n",
+            AVG(stats->processing_latency.sum, stats->rcvd_frames), stats->processing_latency.min, stats->processing_latency.max);
     }
 }
 
 static void xsk_stats_dump(dqdk_worker_t* xsk)
 {
     printf("XSK %u on Queue %u Statistics:\n", xsk->index, xsk->queue_id);
-    stats_dump(&xsk->stats, xsk->debug);
+    stats_dump(&xsk->stats, xsk->debug_flags & DQDK_DEBUG);
 }
 
 void dqdk_usage(char** argv)
@@ -439,6 +452,7 @@ void dqdk_usage(char** argv)
     printf("    -b <size>                    Set batch size. Default: 64\n");
     printf("    -w                           Use XDP need wakeup flag\n");
     printf("    -s                           Expected Packet Size. Default: 3392\n");
+    printf("    -l                           Dump latency values as a CSV file. Requires -D\n");
     printf("    -m <waveform|energy-histo>   Set TRISTAN Mode.\n");
     printf("    -A <irq1,irq2,...>           Set affinity mapping between application threads and drivers queues\n");
     printf("                                 e.g. q1 to irq1, q2 to irq2,...\n");
@@ -447,6 +461,7 @@ void dqdk_usage(char** argv)
     printf("                                 of softirq and the app to two logical cores of the same physical core.\n");
     printf("    -G                           Activate Huge Pages for UMEM allocation\n");
     printf("    -S                           Run IRQ and App on same core\n");
+    printf("    -D                           Enable Latency measurements\n");
 }
 
 #define dqdk_update_mask(mask, howmany) (*mask = *mask & (0xffffffffffffffff << (howmany)));
@@ -547,6 +562,13 @@ static void dqdk_worker_free(dqdk_worker_t* xsk)
             umem_info_free(xsk->umem_info);
             free(xsk->umem_info);
         }
+
+        if (xsk->stats.queuing_latency.raw != NULL)
+            free(xsk->stats.queuing_latency.raw);
+
+        if (xsk->stats.processing_latency.raw != NULL)
+            free(xsk->stats.processing_latency.raw);
+
         free(xsk);
     }
 }
@@ -632,8 +654,13 @@ int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* noshared_private)
     xsk->dedicated_private = noshared_private;
     xsk->batch_size = ctx->batch_size;
     xsk->busy_poll = ctx->busy_poll;
-    xsk->debug = ctx->debug;
+    xsk->debug_flags = ctx->debug_flags;
     xsk->thread_attrs = calloc(1, sizeof(pthread_attr_t));
+
+    if (xsk->debug_flags & DQDK_DEBUG_LATENCYDUMP) {
+        xsk->stats.queuing_latency.raw = calloc(DQDK_MAX_LATENCY_METRICS, sizeof(s64));
+        xsk->stats.processing_latency.raw = calloc(DQDK_MAX_LATENCY_METRICS, sizeof(s64));
+    }
 
     pthread_attr_init(xsk->thread_attrs);
     ret = dqdk_set_affinity(ctx->hyperthreading, ctx->samecore, irq, &ctx->cpu_mask, &xsk->cset, xsk->thread_attrs);
@@ -650,11 +677,6 @@ static int dqdk_ctx_free(dqdk_ctx_t* ctx)
 
     if (ctx->ifname != NULL)
         free(ctx->ifname);
-
-    // if (ctx->kern_prog != NULL) {
-    //     xdp_program__detach(ctx->kern_prog, ctx->ifindex, ctx->xmode, 0);
-    //     xdp_program__close(ctx->kern_prog);
-    // }
 
     if (ctx->forwarder != NULL) {
         LIBBPF_OPTS(bpf_xdp_attach_opts, opts, .old_prog_fd = bpf_program__fd(ctx->forwarder->progs.dqdk_forwarder));
@@ -762,7 +784,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     ctx->nbqueues = nbqueues;
     ctx->private = sharedprivate;
     ctx->hyperthreading = hyperthreading;
-    ctx->debug = debug;
+    ctx->debug_flags = debug;
     ctx->packetsz = packetsz;
     ctx->ifspeed = dqdk_get_link_speed(ctx->ifname);
     ctx->umem_flags = umem_flags;
@@ -770,6 +792,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     ctx->libbpf_flags = XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD;
     ctx->bind_flags = (ctx->needs_wakeup ? XDP_USE_NEED_WAKEUP : 0) | (xdp_mode == XDP_MODE_SKB ? XDP_COPY : 0);
     ctx->xdp_flags = 0;
+    ctx->status = DQDK_STATUS_NONE;
 
     dlog_infov("Selected Interface (%s) Speed=%dMbps", ctx->ifname, ctx->ifspeed);
 
@@ -809,6 +832,12 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
         dlog_infov("NUMA CPU Mask is %#010lX of %d CPUs", ctx->cpu_mask, nprocs);
     }
 
+    if ((ctx->debug_flags & DQDK_DEBUG_LATENCYDUMP) && ~(ctx->debug_flags & DQDK_DEBUG) > 0) {
+        dlog_error("Dumping latency measurements requires debug mode");
+        dqdk_ctx_free(ctx);
+        return NULL;
+    }
+
     if (ctx->umem_flags & UMEM_FLAGS_USE_HGPG) {
         int additional_pages = HUGETLB_CALC_2MB(ctx->umem_size * ctx->nbqueues);
         int needed_hgpg = get_hugepages(ctx->numa_node, HUGE_PAGE_2MB) + additional_pages;
@@ -828,7 +857,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
         return NULL;
     }
 
-    if (ctx->debug) {
+    if (ctx->debug_flags) {
         libbpf_set_print(infoprint);
         if (dqdk_ctx_enable_hwtstamp(ctx) < 0) {
             dlog_error2("dqdk_ctx_enable_hwtstamp", -1);
@@ -854,11 +883,8 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     ctx->forwarder = forwarder__open();
     ctx->forwarder->bss->debug = debug;
 
-    if (ctx->debug) {
-        bpf_program__set_ifindex(ctx->forwarder->progs.dqdk_forwarder, ctx->ifindex);
-        bpf_program__set_flags(ctx->forwarder->progs.dqdk_forwarder, BPF_F_XDP_DEV_BOUND_ONLY);
-    }
-
+    bpf_program__set_ifindex(ctx->forwarder->progs.dqdk_forwarder, ctx->ifindex);
+    bpf_program__set_flags(ctx->forwarder->progs.dqdk_forwarder, BPF_F_XDP_DEV_BOUND_ONLY);
     bpf_program__set_type(ctx->forwarder->progs.dqdk_forwarder, BPF_PROG_TYPE_XDP);
     ret = forwarder__load(ctx->forwarder);
     if (ret < 0) {
@@ -874,15 +900,6 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
         dqdk_ctx_free(ctx);
         return NULL;
     }
-
-    // ctx->kern_prog = xdp_program__from_bpf_obj(ctx->forwarder->obj, NULL);
-    // ret = xdp_program__attach(ctx->kern_prog, ctx->ifindex, ctx->xmode, 0);
-    // if (ret < 0) {
-    //     ctx->kern_prog = NULL;
-    //     dlog_error2("xdp_program__attach", ret);
-    //     dqdk_ctx_free(ctx);
-    //     return NULL;
-    // }
 
     ret = pthread_barrier_init(&ctx->barrier, NULL, nbqueues + 1);
     if (ret) {
@@ -949,6 +966,22 @@ int dqdk_huge_free(dqdk_ctx_t* ctx, u8* mem, u64 size)
     return munmap(mem, size);
 }
 
+static void dqdk_latencystats_dump(dqdk_worker_t* worker, FILE* file)
+{
+    char buffer[1024] = { 0 };
+
+    for (int i = 0; i < DQDK_MAX_LATENCY_METRICS; i++) {
+        memset(buffer, 0, 1024);
+        snprintf(buffer, 1024, "%d,Queuing,%lld,%d\n", worker->index, worker->stats.queuing_latency.raw[i], DQDK_MAX_LATENCY_METRICS);
+        fwrite(buffer, strlen(buffer), 1, file);
+
+        memset(buffer, 0, 1024);
+        snprintf(buffer, 1024, "%d,Processing,%lld,%d\n", worker->index, worker->stats.processing_latency.raw[i], DQDK_MAX_LATENCY_METRICS);
+        fwrite(buffer, strlen(buffer), 1, file);
+        fflush(file);
+    }
+}
+
 int dqdk_ctx_fini(dqdk_ctx_t* ctx)
 {
     dqdk_worker_t* worker;
@@ -958,13 +991,28 @@ int dqdk_ctx_fini(dqdk_ctx_t* ctx)
         return -1;
 
     if (ctx->status > DQDK_STATUS_NONE) {
+        FILE* file = NULL;
+
+        if (ctx->debug_flags & DQDK_DEBUG_LATENCYDUMP) {
+            file = fopen("latency-stats.csv", "w");
+            if (file) {
+                char* buffer = "Worker,Type,Value,Count\n";
+                fwrite(buffer, strlen(buffer), 1, file);
+            }
+        }
+
         for (u32 _i = 0; _i < ctx->nbqueues; _i++) {
             worker = ctx->workers[_i];
             if (worker) {
+                if (worker->debug_flags & DQDK_DEBUG_LATENCYDUMP)
+                    dqdk_latencystats_dump(worker, file);
                 dqdk_worker_free(worker);
                 ctx->workers[_i] = NULL;
             }
         }
+
+        if (file)
+            fclose(file);
     }
 
     return dqdk_ctx_free(ctx);
@@ -1004,14 +1052,14 @@ void dqdk_dump_stats(dqdk_ctx_t* ctx)
         avg_stats.queuing_latency.min = avg_stats.queuing_latency.min == 0 ? worker->stats.queuing_latency.min : MIN(avg_stats.queuing_latency.min, worker->stats.queuing_latency.min);
         avg_stats.queuing_latency.max = MAX(avg_stats.queuing_latency.max, worker->stats.queuing_latency.max);
 
-        avg_stats.total_latency.sum += worker->stats.total_latency.sum;
-        avg_stats.total_latency.min = avg_stats.total_latency.min == 0 ? worker->stats.total_latency.min : MIN(avg_stats.total_latency.min, worker->stats.total_latency.min);
-        avg_stats.total_latency.max = MAX(avg_stats.total_latency.max, worker->stats.total_latency.max);
+        avg_stats.processing_latency.sum += worker->stats.processing_latency.sum;
+        avg_stats.processing_latency.min = avg_stats.processing_latency.min == 0 ? worker->stats.processing_latency.min : MIN(avg_stats.processing_latency.min, worker->stats.processing_latency.min);
+        avg_stats.processing_latency.max = MAX(avg_stats.processing_latency.max, worker->stats.processing_latency.max);
     }
 
     if (ctx->nbqueues != 1) {
         printf("Average Stats:\n");
-        stats_dump(&avg_stats, ctx->debug);
+        stats_dump(&avg_stats, ctx->debug_flags & DQDK_DEBUG);
     }
 }
 
@@ -1019,8 +1067,7 @@ int main(int argc, char** argv)
 {
     // options values
     char* opt_ifname = NULL;
-    u32 opt_batchsize = 64, opt_queues[MAX_QUEUES],
-        opt_irqs[MAX_QUEUES];
+    u32 opt_batchsize = 64, opt_queues[MAX_QUEUES], opt_irqs[MAX_QUEUES];
     double opt_duration = -1;
     u8 opt_needs_wakeup = 0, opt_hyperthreading = 0, opt_samecore = 0,
        opt_busy_poll = 0, opt_umem_flags = 0, opt_debug = 0;
@@ -1045,7 +1092,7 @@ int main(int argc, char** argv)
     memset(opt_queues, -1, sizeof(u32) * MAX_QUEUES);
     memset(opt_irqs, -1, sizeof(u32) * MAX_QUEUES);
 
-    while ((opt = getopt(argc, argv, "a:b:d:hi:q:ws:m:A:BDHGS")) != -1) {
+    while ((opt = getopt(argc, argv, "a:b:d:hi:q:ws:lm:A:BDHGS")) != -1) {
         switch (opt) {
         case 'h':
             dqdk_usage(argv);
@@ -1145,7 +1192,10 @@ int main(int argc, char** argv)
             }
             break;
         case 'D':
-            opt_debug = 1;
+            opt_debug |= DQDK_DEBUG;
+            break;
+        case 'l':
+            opt_debug |= DQDK_DEBUG_LATENCYDUMP;
             break;
         default:
             dqdk_usage(argv);
@@ -1222,6 +1272,7 @@ int main(int argc, char** argv)
 
     dlog_info("Closing...");
 
+    // FIXME: uncomment in production
     // if (private.histo) {
     //     dlog_info("Saving TRISTAN Histogram, this may take a while...");
     //     dqdk_blk_status_t stats = dqdk_blk_dump("tristan-histo.bin", FILE_BSIZE, TRISTAN_HISTO_SZ, private.histo);

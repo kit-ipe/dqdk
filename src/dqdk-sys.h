@@ -165,7 +165,7 @@ int get_hugepages(int device_numanode, huge_page_size_t pagesz)
 
 u8* huge_malloc(int devicenode, u64 size, huge_page_size_t pagesz)
 {
-    (void) devicenode;
+    (void)devicenode;
     void* map = mmap(NULL, size, PROT_READ | PROT_WRITE,
         MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | pagesz, -1, 0);
 
@@ -177,11 +177,24 @@ u8* huge_malloc(int devicenode, u64 size, huge_page_size_t pagesz)
     return (u8*)map;
 }
 
-dqdk_always_inline u64 clock_nsecs()
+#define BAD_CLOCK ((u64)-1)
+
+dqdk_always_inline u64 clock_nsecs(clockid_t clock)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return ts.tv_sec * 1000000000UL + ts.tv_nsec;
+    int ret = clock_gettime(clock, &ts);
+    return ret == 0 ? (ts.tv_sec * 1000000000UL + ts.tv_nsec) : BAD_CLOCK;
+}
+
+#define clock_nsecs_real() clock_nsecs(CLOCK_REALTIME)
+#define clock_nsecs_mono() clock_nsecs(CLOCK_MONOTONIC)
+
+dqdk_always_inline int clock_nsleep(u64 nsecs)
+{
+    struct timespec ts;
+    ts.tv_sec = nsecs / 1000000000;
+    ts.tv_nsec = nsecs % 1000000000;
+    return clock_nanosleep(CLOCK_REALTIME, 0, &ts, NULL);
 }
 
 void nic_set_irq_affinity(int irq, int cpu)

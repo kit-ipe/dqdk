@@ -4,7 +4,7 @@ MODE=$2
 PORTS=$3
 DEBUG=$4
 
-Q=3
+Q=1
 if [ "$NIC" == "" ]; then
     echo "NIC Name is not specified"
     echo "$0 <NIC>"
@@ -25,7 +25,7 @@ source mlx5-optimize.sh $NIC $Q
 pci=`ethtool -i $NIC | grep 'bus-info:' | sed 's/bus-info: //'`
 
 INTR_STRING=$(cat /proc/interrupts | grep "mlx5_comp[0-9]*@pci:${pci}" | head -${Q} | awk '{printf "%s%s", sep, substr($1, 1, length($1)-1); sep=","} END{print ""}')
-ethtool --set-priv-flags $NIC rx_cqe_compress off
+
 if [ $Q -eq 1 ]; then
     Q_STRING=0
 else

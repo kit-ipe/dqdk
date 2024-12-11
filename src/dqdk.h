@@ -36,10 +36,14 @@
 #define popcountl(x) __builtin_popcountl(x)
 #define log2l(x) (31 - __builtin_clz(x))
 
+#define DQDK_MAX_LATENCY_METRICS 10000000
+
 typedef struct {
+    u32 raw_idx;
+    s64 *raw;
     u64 sum;
-    u64 min;
-    u64 max;
+    s64 min;
+    s64 max;
 } latency_t;
 
 typedef struct {
@@ -54,7 +58,7 @@ typedef struct {
     u64 invalid_udp_pkts;
     u64 runtime;
     latency_t queuing_latency;
-    latency_t total_latency;
+    latency_t processing_latency;
     struct xdp_statistics xstats;
 } dqdk_stats_t;
 
@@ -66,6 +70,11 @@ typedef struct {
     void* buffer;
     u8 flags;
 } umem_info_t;
+
+enum {
+    DQDK_DEBUG = 1 << 0,
+    DQDK_DEBUG_LATENCYDUMP = 1 << 1,
+};
 
 typedef struct {
     pthread_t thread;
@@ -82,7 +91,8 @@ typedef struct {
     cpu_set_t cset;
     u32 batch_size;
     u8 busy_poll;
-    u8 debug;
+    u8 debug_flags;
+    u64 soft_timestamp;
 } dqdk_worker_t;
 
 typedef enum {
@@ -107,7 +117,7 @@ typedef struct {
     u32 libbpf_flags;
     u32 bind_flags;
     u32 xdp_flags;
-    u8 debug;
+    u8 debug_flags;
     u8 hyperthreading;
     u8 samecore;
     u8 verbose;
@@ -117,7 +127,6 @@ typedef struct {
     u32 ifspeed;
     int numa_node;
     struct forwarder* forwarder;
-    struct xdp_program* kern_prog;
     enum xdp_attach_mode xmode;
     unsigned long cpu_mask;
     int nbports;

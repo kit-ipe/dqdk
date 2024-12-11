@@ -26,7 +26,7 @@ Cite our paper:
 ## Build and Install
 
 **Requires** Linux Kernel 6.6+
-Tested on Ubuntu 24.04.01
+Tested on Ubuntu 24.04.01 (Kernel 6.8)
 
 For Ubuntu
 ```bash
@@ -53,7 +53,7 @@ An PTP service can be used to do this synchronization. Example:
 ptp -i eth0 -m
 phc2sys -s eth0 -c CLOCK_REALTIME -O 0
 ```
-Run DQDK in debug mode to measure latencies.
+Run DQDK in debug mode to measure latencies. Make sure all NIC offloading capabilities are enabled and working properly, otherwise a kernel panic occurs and the server needs restarting. Disable ntpd, chronyd, systemd-timesyncd and systemd-timedated services because they will conflict with ptp4l.
 
 ## TRISTAN Results
 
