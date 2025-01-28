@@ -5,9 +5,9 @@ PORTS=$3
 DEBUG=$4
 
 Q=1
-if [ "$NIC" == "" ]; then
-    echo "NIC Name is not specified"
-    echo "$0 <NIC>"
+if [[ "$#" -lt 3 ]]; then
+    echo "$0: Incorrect number of parameters!"
+    echo "$0 <NIC> <tristan-mode> <udp-port-range> [debug]"
     exit
 fi
 
@@ -17,6 +17,10 @@ if [ "$MODE" == "energy-histo" ]; then
 fi
 
 nic_numa=$(cat /sys/class/net/$NIC/device/numa_node)
+if [[ "$nic_numa" == "-1" ]]; then
+    nic_numa=0
+fi
+
 echo 0 > /sys/devices/system/node/node${nic_numa}/hugepages/hugepages-2048kB/nr_hugepages
 
 xdp-loader unload --all $NIC
