@@ -9,6 +9,8 @@
 #include <netinet/ip.h>
 #include <netinet/udp.h>
 
+#define bpf_unlikely(cond) __builtin_expect(!!(cond), 0)
+
 #define MAX_SOCKS 16
 #define MAX_PORTS 50
 
@@ -36,6 +38,8 @@ extern int bpf_xdp_metadata_rx_timestamp(const struct xdp_md* ctx,
 SEC("xdp")
 int dqdk_forwarder(struct xdp_md* ctx)
 {
+    // return bpf_redirect_map(&xsks_map, ctx->rx_queue_index, XDP_DROP);
+
     void* data = (void*)(long)ctx->data;
     void* data_end = (void*)(long)ctx->data_end;
 
@@ -50,30 +54,30 @@ int dqdk_forwarder(struct xdp_md* ctx)
     }
 
     struct ethhdr* eth = (struct ethhdr*)data;
-    if (eth + 1 >= data_end) {
+    if (bpf_unlikely(eth + 1 >= data_end)) {
         bpf_printk("XDP_DROP: %d\n", __LINE__);
         return XDP_DROP;
     }
 
-    if (eth->h_proto != bpf_htons(ETH_P_IP)) {
+    if (bpf_unlikely(eth->h_proto != bpf_htons(ETH_P_IP))) {
         bpf_printk("XDP_PASS: %d\n", __LINE__);
         return XDP_PASS;
     }
 
     struct iphdr* ip = (struct iphdr*)(eth + 1);
 
-    if (ip + 1 >= data_end) {
+    if (bpf_unlikely(ip + 1 >= data_end)) {
         bpf_printk("XDP_DROP: %d\n", __LINE__);
         return XDP_DROP;
     }
 
-    if (ip->protocol != IPPROTO_UDP) {
+    if (bpf_unlikely(ip->protocol != IPPROTO_UDP)) {
         bpf_printk("IP Protocol %d is not UDP\n", ip->protocol);
         return XDP_PASS;
     }
 
     struct udphdr* udp = (struct udphdr*)(ip + 1);
-    if (udp + 1 >= data_end) {
+    if (bpf_unlikely(udp + 1 >= data_end)) {
         bpf_printk("XDP_DROP: %d\n", __LINE__);
         return XDP_DROP;
     }
@@ -84,7 +88,7 @@ int dqdk_forwarder(struct xdp_md* ctx)
         return XDP_PASS;
     }
 
-    if (debug) {
+    if (bpf_unlikely(debug)) {
         if (data + sizeof(__u64) < data_end) {
             int ret = bpf_xdp_metadata_rx_timestamp(ctx, (__u64*)data);
             if (ret < 0)

@@ -41,6 +41,7 @@ typedef struct listwave listwave_t;
 #define CHNLS_COUNT (CHNLS_1TILE * TILES_COUNT)
 
 typedef enum {
+    TRISTAN_MODE_DROP,
     TRISTAN_MODE_WAVEFORM,
     TRISTAN_MODE_LISTWAVE,
     TRISTAN_MODE_ENERGYHISTO,

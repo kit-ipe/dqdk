@@ -11,10 +11,7 @@ if [[ "$#" -lt 3 ]]; then
     exit
 fi
 
-DQDK_MODE="-m waveform -d 4000"
-if [ "$MODE" == "energy-histo" ]; then
-    DQDK_MODE="-m energy-histo"
-fi
+DQDK_MODE="-m $MODE -d 4000"
 
 nic_numa=$(cat /sys/class/net/$NIC/device/numa_node)
 if [[ "$nic_numa" == "-1" ]]; then
@@ -39,10 +36,10 @@ fi
 
 mlx5-rx-dbg.sh $NIC | tee $(pwd)/ethtool.log &
 
-PERF_EV="context-switches,cpu-migrations,cycles,mem-loads,mem-stores,ref-cycles,instructions,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses,dTLB-load-misses,dTLB-loads,dTLB-store-misses,dTLB-stores,iTLB-load-misses,branches,branch-instructions,branch-misses,bus-cycles,page-faults,slots"
+PERF_EV="context-switches,cpu-migrations,cycles,mem-loads,mem-stores,ref-cycles,instructions,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses,dTLB-load-misses,dTLB-loads,dTLB-store-misses,dTLB-stores,iTLB-load-misses,branches,branch-instructions,branch-misses,bus-cycles,page-faults,L1-icache-load-misses"
 POWER_EV="power/energy-ram/,power/energy-pkg/"
-# CMD="perf stat -e $PERF_EV ./dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
 [[ "$DEBUG" == "debug" ]] && DEBUG_ARG="-D" || DEBUG_ARG=
+# CMD="perf record -e $PERF_EV dqdk -i $NIC -q $Q_STRING -b 64 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
 CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
 echo "Executing DQDK Command is: $CMD"
 

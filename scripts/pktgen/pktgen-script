@@ -1,0 +1,29 @@
+set 0 size 64
+set 0 proto udp
+# set 0 count 10000000
+set 0 txburst 256
+set 0 rate 100
+set 0 sport 5001
+set 0 dst mac 1c:34:da:5b:a7:d4
+
+enable 0 range
+range 0 proto udp
+range 0 dst mac start 1c:34:da:5b:a7:d4
+range 0 dst mac min 1c:34:da:5b:a7:d4
+range 0 dst mac max 1c:34:da:5b:a7:d4
+range 0 dst mac inc 00:00:00:00:00:00
+
+range 0 dst ip start 192.168.20.2
+range 0 dst ip min 192.168.20.2
+range 0 dst ip max 192.168.20.2
+range 0 dst ip inc 0.0.0.0
+
+range 0 src port start 5001
+range 0 src port min 5001
+range 0 src port max 5010
+range 0 src port inc 1
+
+range 0 size start 64
+range 0 size min 64
+range 0 size max 64
+range 0 size inc 0
