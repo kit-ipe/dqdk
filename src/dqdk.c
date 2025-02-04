@@ -323,8 +323,6 @@ static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
         u8* frame = xsk_umem__get_data(xsk->umem_info->buffer, desc->addr);
 
         process_frame(xsk, frame, desc->len);
-
-        *xsk_ring_prod__fill_addr(fq, idx_fq++) = desc->addr;
     }
 
     xsk_ring_cons__release(&xsk->rx, rcvd);
