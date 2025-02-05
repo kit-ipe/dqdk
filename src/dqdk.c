@@ -1188,10 +1188,12 @@ int main(int argc, char** argv)
         }
     }
 
-    dlog_info("Waiting for Control Software to connect...");
-    controller = dqdk_controller_start();
-    if (controller == NULL)
-        goto cleanup;
+    if (mode != TRISTAN_MODE_DROP) {
+        dlog_info("Waiting for Control Software to connect...");
+        controller = dqdk_controller_start();
+        if (controller == NULL)
+            goto cleanup;
+    }
 
     ctx = dqdk_ctx_init(opt_ifname, opt_queues, nbqueues, opt_umem_flags, UMEM_SIZE, opt_batchsize, opt_needs_wakeup, opt_busy_poll, XDP_MODE_NATIVE, nbirqs, opt_samecore, opt_packetsz, opt_debug, opt_hyperthreading, (void*)&private);
 
@@ -1251,10 +1253,14 @@ int main(int argc, char** argv)
 
     dlog_info("DAQ Started!");
 
-    int ret = dqdk_controller_wait(controller, ctx);
-    // FIXME: in case the connection closed we need to run some timer and close after that
-    if (ret < 0)
-        goto cleanup;
+    if (mode != TRISTAN_MODE_DROP) {
+        int ret = dqdk_controller_wait(controller, ctx);
+        // FIXME: in case the connection closed we need to run some timer and close after that
+        if (ret < 0)
+            goto cleanup;
+    } else {
+        getchar();
+    }
 
     dlog_info("Closing...");
 
@@ -1278,7 +1284,7 @@ int main(int argc, char** argv)
     dqdk_dump_stats(ctx);
 
 cleanup:
-    if (dqdk_controller_closed(controller) < 0)
+    if (mode != TRISTAN_MODE_DROP && dqdk_controller_closed(controller) < 0)
         dlog_error("Error sending closed status");
 
     if (private.bulk != NULL)
