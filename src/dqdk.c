@@ -278,7 +278,7 @@ static dqdk_always_inline void process_frame(dqdk_worker_t* xsk, u8* frame, u32 
 static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
 {
     umem_info_t* umem = xsk->umem_info;
-    u32 idx_rx = 0, idx_fq = 0;
+    u32 idx_rx = 0, idx_fq;
     struct xsk_ring_prod* fq = &umem->fq0;
 
     if (xsk->debug_flags)
@@ -316,12 +316,8 @@ static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
     ++xsk->stats.rx_successful_fills;
 
     for (int i = 0; i < rcvd; i++) {
-        if (i != rcvd - 1)
-            prefetch_frame(xsk, idx_rx + 1);
-
         const struct xdp_desc* desc = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++);
         u8* frame = xsk_umem__get_data(xsk->umem_info->buffer, desc->addr);
-
         process_frame(xsk, frame, desc->len);
     }
 
@@ -468,13 +464,9 @@ u32 dqdk_calc_affinity(int irq, int ht, int samecore, unsigned long* cpumask)
         }
         app_aff = samecore ? irq_aff : cpu_smt_sibling(irq_aff);
     } else {
-        if (samecore) {
-            app_aff = irq_aff;
-        } else {
-            app_aff = irq_aff + 1;
-            dqdk_update_mask(cpumask, app_aff + 1);
-        }
+        app_aff = samecore ? irq_aff : dqdk_get_next_core(cpumask);
     }
+
     dlog_infov("IRQ(%d) Affinity=%d and Thread Afinity=%d", irq, irq_aff, app_aff);
     affinity = ((irq_aff << 16) & 0xffff0000) | (app_aff & 0x0000ffff);
     return affinity;
