@@ -36,13 +36,28 @@ fi
 
 mlx5-rx-dbg.sh $NIC | tee $(pwd)/ethtool.log &
 
-PERF_EV="context-switches,cpu-migrations,cycles,mem-loads,mem-stores,ref-cycles,instructions,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses,dTLB-load-misses,dTLB-loads,dTLB-store-misses,dTLB-stores,iTLB-load-misses,branches,branch-instructions,branch-misses,bus-cycles,page-faults,L1-icache-load-misses"
-POWER_EV="power/energy-ram/,power/energy-pkg/"
-[[ "$DEBUG" == "debug" ]] && DEBUG_ARG="-D" || DEBUG_ARG=
-# CMD="perf record -e $PERF_EV dqdk -i $NIC -q $Q_STRING -b 64 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
-CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING -G $DQDK_MODE -a $PORTS $DEBUG_ARG"
-echo "Executing DQDK Command is: $CMD"
+PERF_EV="context-switches,cpu-migrations,cycles,mem-loads,mem-stores,ref-cycles,instructions,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses,dTLB-load-misses,dTLB-loads,dTLB-store-misses,dTLB-stores,iTLB-load-misses,branches,branch-instructions,branch-misses,bus-cycles,page-faults,L1-icache-load-misses,L1-dcache-loads,L1-dcache-load-misses"
+POWER_EV="power/energy-ram/,power/energy-pkg/,power/energy-psys/"
 
+case "$DEBUG" in
+    "profile")
+        CMD="perf stat -e $PERF_EV dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G"
+        ;;
+    
+    "power")
+        CMD="perf stat -e $POWER_EV dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G"
+        ;;
+
+    "latency")
+        CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D"
+        ;;
+
+    *)
+        CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G"
+        ;;
+esac
+
+echo "Executing DQDK Command is: $CMD"
 $CMD
 
 pkill mlx5-rx-dbg.sh

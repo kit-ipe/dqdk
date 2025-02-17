@@ -34,6 +34,7 @@
 #include <sys/resource.h>
 #include <bpf/libbpf.h>
 #include <sys/ioctl.h>
+#include <sys/user.h>
 #include <linux/if.h>
 #include <linux/sockios.h>
 #include <linux/net_tstamp.h>
@@ -62,28 +63,12 @@
 
 volatile u32 break_flag = 0;
 
-static void* umem_buffer_create(u32 size, u8 flags, int driver_numa)
-{
-    void* mem = NULL;
-    if (flags & UMEM_FLAGS_USE_HGPG)
-        mem = huge_malloc(driver_numa, size, HUGE_PAGE_2MB);
-    else
-        mem = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-
-    if (mlock(mem, size) < 0) {
-        munmap(mem, size);
-        mem = NULL;
-    }
-
-    return mem;
-}
-
-static umem_info_t* umem_info_create(u32 size, u8 flags, int driver_numa)
+static umem_info_t* umem_info_create(dqdk_ctx_t* ctx)
 {
     umem_info_t* info = (umem_info_t*)calloc(1, sizeof(umem_info_t));
 
-    info->size = size;
-    info->buffer = umem_buffer_create(info->size, flags, driver_numa);
+    info->size = ctx->umem_size;
+    info->buffer = ctx->umem_flags & UMEM_FLAGS_USE_HGPG ? dqdk_huge_malloc(ctx, ctx->umem_size, PAGE_2MB) : dqdk_malloc(ctx, ctx->umem_size, 0);
     if (info->buffer == NULL) {
         dlog_error2("umem_buffer_create", 0);
         free(info);
@@ -91,7 +76,7 @@ static umem_info_t* umem_info_create(u32 size, u8 flags, int driver_numa)
     }
 
     info->umem = NULL;
-    info->flags = flags;
+    info->flags = ctx->umem_flags;
     return info;
 }
 
@@ -249,15 +234,24 @@ static dqdk_always_inline u8* prefetch_frame(dqdk_worker_t* xsk, int idx)
             (worker)->stats.param.raw[(worker)->stats.param.raw_idx++] = latency;                                               \
     } while (0)
 
+static dqdk_always_inline void dqdk_tlb_test(dqdk_worker_t* xsk, u8* frame, u32 len)
+{
+    (void)xsk;
+    (void)frame;
+    (void)len;
+
+    // u32 page_hits = 5;
+    tristan_private_t* private = (tristan_private_t*)xsk->private;
+    int nbpages = private->max_bulk_size / PAGE_SIZE;
+    // for (u32 i = 0; i < page_hits; i++) {
+    u32 addr = (rand() % (nbpages + 1)) * PAGE_SIZE;
+    private->bulk[addr]++;
+    // }
+}
+
 static dqdk_always_inline void process_frame(dqdk_worker_t* xsk, u8* frame, u32 len)
 {
     u32 datalen = 0;
-
-    tristan_private_t* private = (tristan_private_t*)xsk->private;
-
-    if (dqdk_unlikely(private->mode == TRISTAN_MODE_DROP))
-        return;
-
     u8* data = get_udp_payload(xsk, frame, len, &datalen);
 
     if (xsk->debug_flags && xsk->soft_timestamp != BAD_CLOCK) {
@@ -266,10 +260,13 @@ static dqdk_always_inline void process_frame(dqdk_worker_t* xsk, u8* frame, u32 
         WORKER_LATENCY(xsk, queuing_latency, latency);
     }
 
-    if (dqdk_unlikely(datalen == 0 || data == NULL))
+    tristan_private_t* private = (tristan_private_t*)xsk->private;
+    if (dqdk_unlikely(private->mode == TRISTAN_MODE_DROP || datalen == 0 || data == NULL))
         return;
 
-    if (private->mode == TRISTAN_MODE_WAVEFORM)
+    if (private->mode == TRISTAN_MODE_TLB)
+        dqdk_tlb_test(xsk, data, datalen);
+    else if (private->mode == TRISTAN_MODE_WAVEFORM)
         tristan_daq_waveform(private, xsk, data, datalen);
     else if (private->mode == TRISTAN_MODE_ENERGYHISTO)
         tristan_daq_energyhisto(private, xsk, data, datalen);
@@ -394,6 +391,7 @@ static void stats_dump(dqdk_stats_t* stats, u8 debug)
     printf("    Received Packets:         %llu\n", stats->rcvd_pkts);
     printf("    Invalid L3 Packets:       %llu\n", stats->invalid_ip_pkts);
     printf("    Invalid L4 Packets:       %llu\n", stats->invalid_udp_pkts);
+    printf("    L3 Packets per Second:    %.3f\n", AVG_PPS(stats->rcvd_pkts, stats->runtime));
     printf("    Failed Polls:             %llu\n", stats->fail_polls);
     printf("    Timeout Polls:            %llu\n", stats->timeout_polls);
     printf("    XSK Fill Fail Polls:      %llu\n", stats->rx_fill_fail_polls);
@@ -554,7 +552,7 @@ static void* dqdk_worker(void* ptr)
     dqdk_worker_t* xsk = wobj->xsk;
     dqdk_ctx_t* ctx = wobj->ctx;
 
-    xsk->umem_info = umem_info_create(ctx->umem_size, ctx->umem_flags, ctx->numa_node);
+    xsk->umem_info = umem_info_create(ctx);
     if (xsk->umem_info == NULL) {
         dlog_error("Error allocating umem");
         goto error;
@@ -666,8 +664,8 @@ static int dqdk_ctx_free(dqdk_ctx_t* ctx)
     if (ctx->barrier_init)
         pthread_barrier_destroy(&ctx->barrier);
 
-    set_hugepages(ctx->numa_node, 0, HUGE_PAGE_2MB);
-    set_hugepages(ctx->numa_node, 0, HUGE_PAGE_1GB);
+    set_hugepages(ctx->numa_node, 0, PAGE_2MB);
+    set_hugepages(ctx->numa_node, 0, PAGE_1GB);
 
     free(ctx);
     return 0;
@@ -820,8 +818,8 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
 
     if (ctx->umem_flags & UMEM_FLAGS_USE_HGPG) {
         int additional_pages = HUGETLB_CALC_2MB(ctx->umem_size * ctx->nbqueues);
-        int needed_hgpg = get_hugepages(ctx->numa_node, HUGE_PAGE_2MB) + additional_pages;
-        set_hugepages(ctx->numa_node, needed_hgpg, HUGE_PAGE_2MB);
+        int needed_hgpg = get_hugepages(ctx->numa_node, PAGE_2MB) + additional_pages;
+        set_hugepages(ctx->numa_node, needed_hgpg, PAGE_2MB);
         dlog_infov("Huge pages are activated! Allocated 2MB pages=%d", needed_hgpg);
     }
 
@@ -922,30 +920,6 @@ int dqdk_start(dqdk_ctx_t* ctx)
     return 0;
 }
 
-u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, huge_page_size_t pagesz)
-{
-    int additional_pages = pagesz == HUGE_PAGE_2MB ? HUGETLB_CALC_2MB(size) : HUGETLB_CALC_1GB(size);
-    int needed_hgpg = get_hugepages(ctx->numa_node, pagesz) + additional_pages;
-    set_hugepages(ctx->numa_node, needed_hgpg, pagesz);
-    u8* mem = huge_malloc(ctx->numa_node, size, pagesz);
-    if (!mem)
-        goto exit;
-
-    if (mlock(mem, size) < 0) {
-        dqdk_huge_free(ctx, mem, size);
-        mem = NULL;
-    }
-
-exit:
-    return mem;
-}
-
-int dqdk_huge_free(dqdk_ctx_t* ctx, u8* mem, u64 size)
-{
-    (void)ctx;
-    return munmap(mem, size);
-}
-
 static void dqdk_latencystats_dump(dqdk_worker_t* worker, FILE* file)
 {
     char buffer[1024] = { 0 };
@@ -1041,6 +1015,54 @@ void dqdk_dump_stats(dqdk_ctx_t* ctx)
         printf("Average Stats:\n");
         stats_dump(&avg_stats, ctx->debug_flags & DQDK_DEBUG);
     }
+}
+
+int dqdk_free(dqdk_ctx_t* ctx, u8* mem, u64 size)
+{
+    (void)ctx;
+    return munmap(mem, size);
+}
+
+u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags)
+{
+    (void)ctx;
+    void* map = mmap(NULL, size, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS | flags, -1, 0);
+
+    if (map == MAP_FAILED) {
+        dlog_error2("dqdk_malloc", (int)(u64)map);
+        return NULL;
+    }
+
+    if (mlock(map, size) < 0) {
+        dqdk_free(ctx, map, size);
+        map = NULL;
+    }
+
+    return (u8*)map;
+}
+
+u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz)
+{
+    int additional_pages = 0, needed_hgpg = 0;
+
+    switch (pagesz) {
+    case PAGE_2MB:
+        additional_pages = HUGETLB_CALC_2MB(size);
+        break;
+    case PAGE_1GB:
+        additional_pages = HUGETLB_CALC_1GB(size);
+        break;
+
+    case PAGE_4KB:
+    default:
+        return NULL;
+    }
+
+    needed_hgpg = get_hugepages(ctx->numa_node, pagesz) + additional_pages;
+    set_hugepages(ctx->numa_node, needed_hgpg, pagesz);
+
+    return dqdk_malloc(ctx, size, MAP_HUGETLB | pagesz);
 }
 
 int main(int argc, char** argv)
@@ -1162,13 +1184,15 @@ int main(int argc, char** argv)
             opt_samecore = 1;
             break;
         case 'm':
-            if (strcmp(optarg, "drop") == 0) {
+            if (strcmp(optarg, "tlb") == 0)
+                mode = TRISTAN_MODE_TLB;
+            else if (strcmp(optarg, "drop") == 0)
                 mode = TRISTAN_MODE_DROP;
-            } else if (strcmp(optarg, "energy-histo") == 0) {
+            else if (strcmp(optarg, "energy-histo") == 0)
                 mode = TRISTAN_MODE_ENERGYHISTO;
-            } else if (strcmp(optarg, "waveform") == 0) {
+            else if (strcmp(optarg, "waveform") == 0)
                 mode = TRISTAN_MODE_WAVEFORM;
-            } else {
+            else {
                 dlog_errorv("Unknown TRISTAN mode: %s", optarg);
                 exit(EXIT_FAILURE);
             }
@@ -1186,7 +1210,7 @@ int main(int argc, char** argv)
         }
     }
 
-    if (mode != TRISTAN_MODE_DROP) {
+    if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB) {
         dlog_info("Waiting for Control Software to connect...");
         controller = dqdk_controller_start();
         if (controller == NULL)
@@ -1208,15 +1232,23 @@ int main(int argc, char** argv)
     private.mode = mode;
     if (mode != TRISTAN_MODE_DROP) {
         dlog_info("Allocating TRISTAN Memory...");
-        if (mode == TRISTAN_MODE_ENERGYHISTO || mode == TRISTAN_MODE_LISTWAVE) {
-            private.histo = (tristan_histo_t*)dqdk_huge_malloc(ctx, TRISTAN_HISTO_SZ, HUGE_PAGE_2MB);
+        if (mode == TRISTAN_MODE_ENERGYHISTO
+            || mode == TRISTAN_MODE_LISTWAVE) {
+            if (opt_umem_flags & UMEM_FLAGS_USE_HGPG) {
+                private.histo = (tristan_histo_t*)dqdk_huge_malloc(ctx, TRISTAN_HISTO_SZ, PAGE_2MB);
+            } else {
+                private.histo = (tristan_histo_t*)dqdk_malloc(ctx, TRISTAN_HISTO_SZ, 0);
+            }
+
             if (private.histo == NULL) {
                 dlog_error("Error allocating huge pages memory for TRISTAN histograms");
                 goto cleanup;
             }
         }
 
-        if (mode == TRISTAN_MODE_WAVEFORM || mode == TRISTAN_MODE_LISTWAVE) {
+        if (mode == TRISTAN_MODE_TLB
+            || mode == TRISTAN_MODE_WAVEFORM
+            || mode == TRISTAN_MODE_LISTWAVE) {
             if (opt_duration < 0) {
                 dlog_error("TRISTAN Modes: waveform and listwave require setting a duration");
                 goto cleanup;
@@ -1228,7 +1260,7 @@ int main(int argc, char** argv)
              */
             double bulk_size = ((ctx->ifspeed * 1.0 / 8) * 1024 * 1024) * (opt_duration * 1.0 / 1000);
             private.max_bulk_size = (u64)ceil(bulk_size);
-            private.bulk = dqdk_huge_malloc(ctx, private.max_bulk_size, HUGE_PAGE_2MB);
+            private.bulk = opt_umem_flags & UMEM_FLAGS_USE_HGPG ? dqdk_huge_malloc(ctx, private.max_bulk_size, PAGE_2MB) : dqdk_malloc(ctx, private.max_bulk_size, 0);
             private.head = private.bulk;
             private.bulk_size = 0;
 
@@ -1251,7 +1283,7 @@ int main(int argc, char** argv)
 
     dlog_info("DAQ Started!");
 
-    if (mode != TRISTAN_MODE_DROP) {
+    if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB) {
         int ret = dqdk_controller_wait(controller, ctx);
         // FIXME: in case the connection closed we need to run some timer and close after that
         if (ret < 0)
@@ -1262,7 +1294,7 @@ int main(int argc, char** argv)
 
     dlog_info("Closing...");
 
-    if (mode != TRISTAN_MODE_DROP) {
+    if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB) {
         if (private.histo) {
             dlog_info("Saving TRISTAN Histogram, this may take a while...");
             dqdk_blk_status_t stats = dqdk_blk_dump("tristan-histo.bin", FILE_BSIZE, TRISTAN_HISTO_SZ, private.histo);
@@ -1282,14 +1314,15 @@ int main(int argc, char** argv)
     dqdk_dump_stats(ctx);
 
 cleanup:
-    if (mode != TRISTAN_MODE_DROP && dqdk_controller_closed(controller) < 0)
+    if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB
+        && dqdk_controller_closed(controller) < 0)
         dlog_error("Error sending closed status");
 
     if (private.bulk != NULL)
-        dqdk_huge_free(ctx, private.bulk, private.max_bulk_size);
+        dqdk_free(ctx, private.bulk, private.max_bulk_size);
 
     if (private.histo != NULL)
-        dqdk_huge_free(ctx, (u8*)private.histo, TRISTAN_HISTO_SZ);
+        dqdk_free(ctx, (u8*)private.histo, TRISTAN_HISTO_SZ);
 
     return dqdk_ctx_fini(ctx);
 }

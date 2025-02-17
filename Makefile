@@ -1,4 +1,4 @@
-.PHONY=dqdk dqdk-install dqdk-clean xdploader xdploader-install xdploader-clean install clean all
+.PHONY: dqdk dqdk-install dqdk-clean xdploader xdploader-install xdploader-clean install clean all
 
 all: dqdk xdploader
 

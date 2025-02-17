@@ -106,17 +106,18 @@ int nic_numa_node(const char* ifname)
 }
 
 typedef enum {
-    HUGE_PAGE_2MB = MAP_HUGE_2MB,
-    HUGE_PAGE_1GB = MAP_HUGE_1GB,
-} huge_page_size_t;
+    PAGE_4KB = 0,
+    PAGE_2MB = MAP_HUGE_2MB,
+    PAGE_1GB = MAP_HUGE_1GB,
+} page_size_t;
 
 // get NUMA node huge pages
-char* get_numa_hugepages_path(int numanode, huge_page_size_t pagesz)
+char* get_numa_hugepages_path(int numanode, page_size_t pagesz)
 {
     char* path = calloc(1, PATH_MAX);
-    if (pagesz == HUGE_PAGE_2MB)
+    if (pagesz == PAGE_2MB)
         sprintf(path, "/sys/devices/system/node/node%d/hugepages/hugepages-2048kB/nr_hugepages", numanode);
-    else if (pagesz == HUGE_PAGE_1GB)
+    else if (pagesz == PAGE_1GB)
         sprintf(path, "/sys/devices/system/node/node%d/hugepages/hugepages-1048576kB/nr_hugepages", numanode);
     else {
         free(path);
@@ -131,14 +132,23 @@ int reserve_hugepages(const char* path, int nb_hugepages)
     return sys_write_int(path, nb_hugepages);
 }
 
-int set_hugepages(int device_numanode, int howmany, huge_page_size_t pagesz)
+int set_hugepages(int device_numanode, int howmany, page_size_t pagesz)
 {
     char* path;
     int ret;
 
     if (device_numanode == -1) {
-        char* hgpg_path = pagesz == HUGE_PAGE_2MB ? HUGETLB_PATH_2MB : HUGETLB_PATH_1GB;
-        return reserve_hugepages(hgpg_path, howmany);
+        switch (pagesz) {
+        case PAGE_2MB:
+            return reserve_hugepages(HUGETLB_PATH_2MB, howmany);
+
+        case PAGE_1GB:
+            return reserve_hugepages(HUGETLB_PATH_1GB, howmany);
+
+        case PAGE_4KB:
+        default:
+            return -1;
+        }
     }
 
     path = get_numa_hugepages_path(device_numanode, pagesz);
@@ -147,14 +157,23 @@ int set_hugepages(int device_numanode, int howmany, huge_page_size_t pagesz)
     return ret;
 }
 
-int get_hugepages(int device_numanode, huge_page_size_t pagesz)
+int get_hugepages(int device_numanode, page_size_t pagesz)
 {
     int ret;
     char* path;
 
     if (device_numanode == -1) {
-        char* hgpg_path = pagesz == HUGE_PAGE_2MB ? HUGETLB_PATH_2MB : HUGETLB_PATH_1GB;
-        return sys_read_uint(hgpg_path);
+        switch (pagesz) {
+        case PAGE_2MB:
+            return sys_read_uint(HUGETLB_PATH_2MB);
+
+        case PAGE_1GB:
+            return sys_read_uint(HUGETLB_PATH_1GB);
+
+        case PAGE_4KB:
+        default:
+            return -1;
+        }
     }
 
     path = get_numa_hugepages_path(device_numanode, pagesz);
@@ -163,21 +182,7 @@ int get_hugepages(int device_numanode, huge_page_size_t pagesz)
     return ret;
 }
 
-u8* huge_malloc(int devicenode, u64 size, huge_page_size_t pagesz)
-{
-    (void)devicenode;
-    void* map = mmap(NULL, size, PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | pagesz, -1, 0);
-
-    if (map == MAP_FAILED) {
-        dlog_error2("huge_malloc", (int)(u64)map);
-        return NULL;
-    }
-
-    return (u8*)map;
-}
-
-#define BAD_CLOCK ((u64)-1)
+#define BAD_CLOCK ((u64) - 1)
 
 dqdk_always_inline u64 clock_nsecs(clockid_t clock)
 {

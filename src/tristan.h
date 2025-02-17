@@ -42,6 +42,7 @@ typedef struct listwave listwave_t;
 
 typedef enum {
     TRISTAN_MODE_DROP,
+    TRISTAN_MODE_TLB,
     TRISTAN_MODE_WAVEFORM,
     TRISTAN_MODE_LISTWAVE,
     TRISTAN_MODE_ENERGYHISTO,

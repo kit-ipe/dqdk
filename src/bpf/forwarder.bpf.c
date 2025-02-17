@@ -38,8 +38,6 @@ extern int bpf_xdp_metadata_rx_timestamp(const struct xdp_md* ctx,
 SEC("xdp")
 int dqdk_forwarder(struct xdp_md* ctx)
 {
-    // return bpf_redirect_map(&xsks_map, ctx->rx_queue_index, XDP_DROP);
-
     void* data = (void*)(long)ctx->data;
     void* data_end = (void*)(long)ctx->data_end;
 

@@ -40,7 +40,7 @@
 
 typedef struct {
     u32 raw_idx;
-    s64 *raw;
+    s64* raw;
     u64 sum;
     s64 min;
     s64 max;
@@ -66,7 +66,7 @@ typedef struct {
     struct xsk_umem* umem;
     struct xsk_ring_prod fq0;
     struct xsk_ring_cons cq0;
-    u32 size;
+    u64 size;
     void* buffer;
     u8 flags;
 } umem_info_t;
@@ -134,8 +134,6 @@ typedef struct {
 } dqdk_ctx_t;
 
 dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u32 packetsz, u8 debug, u8 hyperthreading, void* sharedprivate);
-u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, huge_page_size_t pagesz);
-int dqdk_huge_free(dqdk_ctx_t* ctx, u8* mem, u64 size);
 int dqdk_add_port(dqdk_ctx_t* ctx, u16 port);
 int dqdk_stats_dump(dqdk_ctx_t* ctx);
 int dqdk_start(dqdk_ctx_t* ctx);
@@ -143,5 +141,8 @@ int dqdk_waitall(dqdk_ctx_t* ctx);
 int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* noshared_private);
 int dqdk_ctx_fini(dqdk_ctx_t*);
 void dqdk_dump_stats(dqdk_ctx_t* ctx);
+u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz);
+u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags);
+int dqdk_free(dqdk_ctx_t* ctx, u8* mem, u64 size);
 
 #endif
