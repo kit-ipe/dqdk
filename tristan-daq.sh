@@ -4,14 +4,14 @@ MODE=$2
 PORTS=$3
 DEBUG=$4
 
-Q=1
+Q=2
 if [[ "$#" -lt 3 ]]; then
     echo "$0: Incorrect number of parameters!"
     echo "$0 <NIC> <tristan-mode> <udp-port-range> [debug]"
     exit
 fi
 
-DQDK_MODE="-m $MODE -d 4000"
+DQDK_MODE="-m $MODE -d 2000"
 
 nic_numa=$(cat /sys/class/net/$NIC/device/numa_node)
 if [[ "$nic_numa" == "-1" ]]; then

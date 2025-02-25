@@ -776,6 +776,12 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     ctx->xdp_flags = 0;
     ctx->status = DQDK_STATUS_NONE;
 
+    if (ctx->ifspeed < 0) {
+        dlog_error("Error fetching link speed");
+        dqdk_ctx_free(ctx);
+        return NULL;
+    }
+
     dlog_infov("Selected Interface (%s) Speed=%dMbps", ctx->ifname, ctx->ifspeed);
 
     ctx->numa_node = nic_numa_node(ifname);

@@ -124,7 +124,7 @@ typedef struct {
     int packetsz;
     char* ifname;
     int ifindex;
-    u32 ifspeed;
+    int ifspeed;
     int numa_node;
     struct forwarder* forwarder;
     enum xdp_attach_mode xmode;
