@@ -1296,13 +1296,12 @@ int main(int argc, char** argv)
     dlog_info("Closing...");
 
     if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB) {
-        struct tm ltm = { 0 };
+        struct tm tm = { 0 };
         time_t tval = time(NULL);
-        chat path_name[PATH_MAX];
+        char path_name[PATH_MAX];
 
-        if (tval != ((time_t)-1)) {
-            ltm = *localtime(tval);
-        }
+        if (tval != ((time_t)-1))
+            tm = *localtime(&tval);
 
         if (private.histo) {
             dlog_info("Saving TRISTAN Histogram, this may take a while...");
@@ -1315,7 +1314,7 @@ int main(int argc, char** argv)
         memset(path_name, 0, PATH_MAX);
 
         if (private.bulk && private.head - private.bulk != 0) {
-            dlog_info("Saving TRISTAN Waveform (Total Bytes=%lu), this may take a while...", private.head - private.bulk);
+            dlog_infov("Saving TRISTAN Waveform (Total Bytes=%lu), this may take a while...", private.head - private.bulk);
             snprintf(path_name, PATH_MAX, "tristan-raw-%d-%d-%d-%d%d.bin", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
             dqdk_blk_status_t stats = dqdk_blk_dump(path_name, FILE_BSIZE, private.head - private.bulk, private.bulk);
             if (stats.status != 0)
