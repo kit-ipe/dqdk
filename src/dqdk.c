@@ -230,7 +230,8 @@ static dqdk_always_inline u8* prefetch_frame(dqdk_worker_t* xsk, int idx)
         (worker)->stats.param.max = MAX((worker)->stats.param.max, (latency));                                                  \
         if ((latency) > 0)                                                                                                      \
             (worker)->stats.param.min = (worker)->stats.param.min == 0 ? (latency) : MIN((worker)->stats.param.min, (latency)); \
-        if ((worker)->debug_flags & DQDK_DEBUG_LATENCYDUMP)                                                                     \
+        if (((worker)->debug_flags & DQDK_DEBUG_LATENCYDUMP)                                                                    \
+            && ((worker)->stats.param.raw_idx) < DQDK_MAX_LATENCY_METRICS)                                                      \
             (worker)->stats.param.raw[(worker)->stats.param.raw_idx++] = latency;                                               \
     } while (0)
 
@@ -1295,16 +1296,28 @@ int main(int argc, char** argv)
     dlog_info("Closing...");
 
     if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB) {
+        struct tm ltm = { 0 };
+        time_t tval = time(NULL);
+        chat path_name[PATH_MAX];
+
+        if (tval != ((time_t)-1)) {
+            ltm = *localtime(tval);
+        }
+
         if (private.histo) {
             dlog_info("Saving TRISTAN Histogram, this may take a while...");
-            dqdk_blk_status_t stats = dqdk_blk_dump("tristan-histo.bin", FILE_BSIZE, TRISTAN_HISTO_SZ, private.histo);
+            snprintf(path_name, PATH_MAX, "tristan-histo-%d-%d-%d-%d%d.bin", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
+            dqdk_blk_status_t stats = dqdk_blk_dump(path_name, FILE_BSIZE, TRISTAN_HISTO_SZ, private.histo);
             if (stats.status != 0)
                 dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
         }
 
+        memset(path_name, 0, PATH_MAX);
+
         if (private.bulk && private.head - private.bulk != 0) {
-            dlog_info("Saving TRISTAN Waveform, this may take a while...");
-            dqdk_blk_status_t stats = dqdk_blk_dump("tristan-raw.bin", FILE_BSIZE, private.head - private.bulk, private.bulk);
+            dlog_info("Saving TRISTAN Waveform (Total Bytes=%lu), this may take a while...", private.head - private.bulk);
+            snprintf(path_name, PATH_MAX, "tristan-raw-%d-%d-%d-%d%d.bin", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
+            dqdk_blk_status_t stats = dqdk_blk_dump(path_name, FILE_BSIZE, private.head - private.bulk, private.bulk);
             if (stats.status != 0)
                 dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
         }

@@ -48,16 +48,10 @@ Another timestamp is issued inside DQDK user-space code. The latency is calculat
 The NIC clock (PHC) and the system clock should be synchronized.
 An PTP service can be used to do this synchronization. Example:
 ```bash
-ptp -i eth0 -m
+ptp4l -i eth0 -m
 phc2sys -s eth0 -c CLOCK_REALTIME -O 0
 ```
 Run DQDK in debug mode to measure latencies. Make sure all NIC offloading capabilities are enabled and working properly, otherwise a kernel panic occurs and the server needs restarting. Disable ntpd, chronyd, systemd-timesyncd and systemd-timedated services because they will conflict with ptp4l.
-
-## TRISTAN Results
-
-| Packet Size | RSS UDP Ports | 1 Frame every | Queues | Wake up Flag | Huge Pages | Batch Size | Interrupts & Cores | Zero loss | Histo | MPPS | Payload Throughput | 
-| ----------- | ------ | --------- | ------------- | ----------- | ------ | --------- | ------------- | ----------- | ------ | ---- | ---- |
-| 3392 | 2 | 295nsec | 2 | Yes | Yes | 2048 | 2 Cores / Queue (ints and app) | Yes | No | 3.45 | 93.6% |
 
 ## Usage
 

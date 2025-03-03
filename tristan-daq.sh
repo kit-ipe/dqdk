@@ -52,9 +52,20 @@ case "$DEBUG" in
         CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D"
         ;;
 
-    *)
+    "latency-profile")
+        CMD="perf stat -e $PERF_EV dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D"
+        ;;
+
+    "latency-dump")
+        CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -l"
+        ;;
+
+    "")
         CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G"
         ;;
+    *)
+        echo "Invalid profile: $DEBUG"
+        exit 0
 esac
 
 echo "Executing DQDK Command is: $CMD"
