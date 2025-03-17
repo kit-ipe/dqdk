@@ -127,7 +127,7 @@ typedef struct {
     int ifspeed;
     int numa_node;
     struct forwarder* forwarder;
-    enum xdp_attach_mode xmode;
+    int xmode;
     unsigned long cpu_mask;
     int nbports;
     dqdk_status_t status;

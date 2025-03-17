@@ -653,7 +653,7 @@ static int dqdk_ctx_free(dqdk_ctx_t* ctx)
 
     if (ctx->forwarder != NULL) {
         LIBBPF_OPTS(bpf_xdp_attach_opts, opts, .old_prog_fd = bpf_program__fd(ctx->forwarder->progs.dqdk_forwarder));
-        int ret = bpf_xdp_detach(ctx->ifindex, XDP_FLAGS_DRV_MODE, &opts);
+        int ret = bpf_xdp_detach(ctx->ifindex, ctx->xmode, &opts);
         if (ret < 0)
             dlog_error2("bpf_xdp_detach", ret);
         forwarder__destroy(ctx->forwarder);
@@ -750,7 +750,20 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     ctx->workers = calloc(nbqueues, sizeof(dqdk_worker_t*));
     ctx->nbports = 0;
     ctx->cpu_mask = 0;
-    ctx->xmode = xdp_mode;
+    switch (xdp_mode) {
+    case XDP_MODE_NATIVE:
+        ctx->xmode = XDP_FLAGS_DRV_MODE;
+        break;
+
+    case XDP_MODE_SKB:
+        ctx->xmode = XDP_FLAGS_SKB_MODE;
+        break;
+
+    default:
+        dlog_error("Invalid XDP Mode");
+        dqdk_ctx_free(ctx);
+        return NULL;
+    }
     ctx->batch_size = batch_size;
     ctx->needs_wakeup = needs_wakeup;
     ctx->busy_poll = busypoll;
@@ -873,7 +886,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     }
 
     LIBBPF_OPTS(bpf_xdp_attach_opts, opts, .old_prog_fd = -1);
-    ret = bpf_xdp_attach(ctx->ifindex, bpf_program__fd(ctx->forwarder->progs.dqdk_forwarder), XDP_FLAGS_DRV_MODE, &opts);
+    ret = bpf_xdp_attach(ctx->ifindex, bpf_program__fd(ctx->forwarder->progs.dqdk_forwarder), ctx->xmode, &opts);
     if (ret < 0) {
         dlog_error2("bpf_xdp_attach", ret);
         dqdk_ctx_free(ctx);
