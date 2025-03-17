@@ -39,6 +39,7 @@
 #include <linux/sockios.h>
 #include <linux/net_tstamp.h>
 
+#define XDP_USE_SG (1 << 4)
 #define BPF_F_XDP_DEV_BOUND_ONLY (1U << 6)
 
 #include "dqdk-controller.h"
@@ -50,7 +51,7 @@
 #include "dqdk.h"
 #include "tristan.h"
 
-#define UMEM_FACTOR 64
+#define UMEM_FACTOR 2
 #define UMEM_LEN (XSK_RING_PROD__DEFAULT_NUM_DESCS * UMEM_FACTOR)
 #define FRAME_SIZE XSK_UMEM__DEFAULT_FRAME_SIZE
 
@@ -725,6 +726,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     dqdk_ctx_t* ctx = calloc(1, sizeof(dqdk_ctx_t));
     int ret = 0;
     u32 nprocs;
+    int xdp_bind_flags = XDP_USE_SG;
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -776,9 +778,16 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     ctx->umem_flags = umem_flags;
     ctx->umem_size = umem_size;
     ctx->libbpf_flags = XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD;
-    ctx->bind_flags = (ctx->needs_wakeup ? XDP_USE_NEED_WAKEUP : 0) | (xdp_mode == XDP_MODE_SKB ? XDP_COPY : 0);
     ctx->xdp_flags = 0;
     ctx->status = DQDK_STATUS_NONE;
+
+    if (ctx->needs_wakeup)
+        xdp_bind_flags |= XDP_USE_NEED_WAKEUP;
+
+    if (xdp_mode == XDP_MODE_SKB)
+        xdp_bind_flags |= XDP_COPY;
+
+    ctx->bind_flags = xdp_bind_flags;
 
     if (ctx->ifspeed < 0) {
         dlog_error("Error fetching link speed");
@@ -877,6 +886,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
 
     bpf_program__set_ifindex(ctx->forwarder->progs.dqdk_forwarder, ctx->ifindex);
     bpf_program__set_flags(ctx->forwarder->progs.dqdk_forwarder, BPF_F_XDP_DEV_BOUND_ONLY);
+    bpf_program__set_flags(ctx->forwarder->progs.dqdk_forwarder, BPF_F_XDP_HAS_FRAGS);
     bpf_program__set_type(ctx->forwarder->progs.dqdk_forwarder, BPF_PROG_TYPE_XDP);
     ret = forwarder__load(ctx->forwarder);
     if (ret < 0) {

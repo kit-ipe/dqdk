@@ -35,7 +35,7 @@ struct {
 extern int bpf_xdp_metadata_rx_timestamp(const struct xdp_md* ctx,
     __u64* timestamp) __ksym;
 
-SEC("xdp")
+SEC("xdp.frags")
 int dqdk_forwarder(struct xdp_md* ctx)
 {
     void* data = (void*)(long)ctx->data;
