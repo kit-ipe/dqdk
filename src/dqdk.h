@@ -134,7 +134,7 @@ typedef struct {
 } dqdk_ctx_t;
 
 dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u32 packetsz, u8 debug, u8 hyperthreading, void* sharedprivate);
-int dqdk_add_port(dqdk_ctx_t* ctx, u16 port);
+int dqdk_for_ports_range(dqdk_ctx_t* ctx, u16 start, u16 end);
 int dqdk_stats_dump(dqdk_ctx_t* ctx);
 int dqdk_start(dqdk_ctx_t* ctx);
 int dqdk_waitall(dqdk_ctx_t* ctx);

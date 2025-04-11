@@ -905,14 +905,12 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     return ctx;
 }
 
-int dqdk_add_port(dqdk_ctx_t* ctx, u16 port)
+int dqdk_for_ports_range(dqdk_ctx_t* ctx, u16 start, u16 end)
 {
-    if (bpf_map__update_elem(ctx->forwarder->maps.accept_ports, &port, sizeof(port), &port, sizeof(port), 0) < 0) {
-        dlog_errorv("Error adding port %u to accept-ports: %s(%d)", port, strerror(errno), errno);
-        return -1;
-    }
+    ctx->forwarder->bss->start_port = start;
+    ctx->forwarder->bss->end_port = end;
 
-    ctx->nbports++;
+    ctx->nbports = end - start;
     return 0;
 }
 
@@ -1238,10 +1236,7 @@ int main(int argc, char** argv)
         goto cleanup;
     }
 
-    for (u16 p = start_port; p <= end_port; p++) {
-        if (dqdk_add_port(ctx, p) < 0)
-            goto cleanup;
-    }
+    dqdk_for_ports_range(ctx, start_port, end_port);
 
     private.mode = mode;
     if (mode != TRISTAN_MODE_DROP) {

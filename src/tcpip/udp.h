@@ -41,8 +41,9 @@ dqdk_always_inline int udp_audit_checksum(struct udphdr* udp, u32 src_ip, u32 ds
 
 dqdk_always_inline int udp_audit(struct udphdr* udp, u32 src_ip, u32 dst_ip, u16 udplen)
 {
-    // printf("ntohs(udp->len): %d != udplen %d\n", ntohs(udp->len), udplen);
-    if (ntohs(udp->len) != udplen || !udp_audit_checksum(udp, src_ip, dst_ip, udplen)) {
+    (void)src_ip;
+    (void)dst_ip;
+    if (ntohs(udp->len) != udplen) { // || !udp_audit_checksum(udp, src_ip, dst_ip, udplen)
         return 0;
     }
 

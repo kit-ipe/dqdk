@@ -12,11 +12,12 @@
 #define bpf_unlikely(cond) __builtin_expect(!!(cond), 0)
 
 #define MAX_SOCKS 16
-#define MAX_PORTS 50
+#define MAX_PORTS 64
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 __u8 debug = 0;
+__u16 start_port = 0, end_port = 0;
 
 struct {
     __uint(type, BPF_MAP_TYPE_XSKMAP);
@@ -25,15 +26,14 @@ struct {
     __uint(max_entries, MAX_SOCKS);
 } xsks_map SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(key_size, sizeof(__u16));
-    __uint(value_size, sizeof(__u16));
-    __uint(max_entries, MAX_PORTS);
-} accept_ports SEC(".maps");
-
 extern int bpf_xdp_metadata_rx_timestamp(const struct xdp_md* ctx,
     __u64* timestamp) __ksym;
+
+int check_in_range(__u16 port)
+{
+    port = bpf_ntohs(port);
+    return port <= end_port && port >= start_port;
+}
 
 SEC("xdp")
 int dqdk_forwarder(struct xdp_md* ctx)
@@ -63,7 +63,6 @@ int dqdk_forwarder(struct xdp_md* ctx)
     }
 
     struct iphdr* ip = (struct iphdr*)(eth + 1);
-
     if (bpf_unlikely(ip + 1 >= data_end)) {
         bpf_printk("XDP_DROP: %d\n", __LINE__);
         return XDP_DROP;
@@ -80,9 +79,8 @@ int dqdk_forwarder(struct xdp_md* ctx)
         return XDP_DROP;
     }
 
-    int srcport = bpf_ntohs(udp->source);
-    if (bpf_map_lookup_elem(&accept_ports, &srcport) == NULL) {
-        bpf_printk("XDP_PASS: %d\n", __LINE__);
+    if (!check_in_range(udp->source)) {
+        bpf_printk("XDP_PASS: %d | srcport=%d \n", __LINE__, bpf_ntohs(udp->source));
         return XDP_PASS;
     }
 
