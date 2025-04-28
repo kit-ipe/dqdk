@@ -16,7 +16,7 @@ if [[ "$2" != "" ]]; then
 fi
 
 echo "Setting MTU..."
-ip link set dev $NIC mtu 3498
+ip link set dev $NIC mtu 9000
 ethtool -s $NIC speed 100000
 max_hw_rxq=`ethtool -g $NIC | grep -m 1 RX: | awk '{print $2}'`
 # max_hw_txq=`ethtool -g $NIC | grep -m 1 TX: | awk '{print $2}'`
