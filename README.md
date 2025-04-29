@@ -13,13 +13,14 @@ Cite our paper:
 
 ```bibtex
 @ARTICLE{10659873,
-  author={Mostafa, Jalal and Tcherniakhovski, Denis and Chilingaryan, Suren and Balzer, Matthias and Kopmann, Andreas and Becker, J\"urgen},
-  journal={IEEE Transactions on Nuclear Science},
-  title={100 Gbit/s UDP Data Acquisition on Linux Using AF_XDP: The TRISTAN Detector},
-  year={2024},
-  volume={},
-  number={},
-  pages={1-1},
+  author={Mostafa, Jalal and Tcherniakhovski, Denis and Chilingaryan, Suren and Balzer, Matthias and Kopmann, Andreas and Becker, Jürgen},
+  journal={IEEE Transactions on Nuclear Science}, 
+  title={100-Gbit/s UDP Data Acquisition on Linux Using AF_XDP: The TRISTAN Detector}, 
+  year={2025},
+  volume={72},
+  number={3},
+  pages={295-300},
+  keywords={Data acquisition;Detectors;Software;Protocols;Linux;Sockets;Field programmable gate arrays;AF_XDP;data acquisition (DAQ);high-throughput detectors;remote direct memory access (RDMA);user datagram protocol (UDP);zero-copy networking},
   doi={10.1109/TNS.2024.3452469}}
 ```
 
