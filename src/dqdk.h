@@ -131,6 +131,7 @@ typedef struct {
     unsigned long cpu_mask;
     int nbports;
     dqdk_status_t status;
+    int huge_allocations;
 } dqdk_ctx_t;
 
 dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u32 packetsz, u8 debug, u8 hyperthreading, void* sharedprivate);

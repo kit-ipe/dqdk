@@ -38,6 +38,7 @@
 #include <linux/if.h>
 #include <linux/sockios.h>
 #include <linux/net_tstamp.h>
+#include <sys/stat.h>
 
 #define BPF_F_XDP_DEV_BOUND_ONLY (1U << 6)
 
@@ -737,6 +738,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
         return NULL;
     }
 
+    ctx->huge_allocations = 0;
     ctx->ifname = strdup(ifname);
     ctx->ifindex = if_nametoindex(ifname);
     memcpy(&ctx->queues, queues, sizeof(ctx->queues));
@@ -1060,6 +1062,9 @@ u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags)
 
 u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz)
 {
+    struct stat st;
+    char hugepage_filename[PATH_MAX];
+
     int additional_pages = 0, needed_hgpg = 0;
 
     switch (pagesz) {
@@ -1075,9 +1080,14 @@ u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz)
         return NULL;
     }
 
-    int fd = open(HUGETLBFS_PATH, O_CREAT | O_RDWR, 0755);
-    if (fd > 0) {
-        dlog_infov("Allocating huge pages memory from %s", HUGETLBFS_PATH);
+    if (stat(HUGETLBFS_PATH, &st) == 0 && S_ISDIR(st.st_mode)) {
+        snprintf(hugepage_filename, PATH_MAX, HUGETLBFS_PATH "/hugefile%d", atomic_fetch_add_explicit(&ctx->huge_allocations, 1, memory_order_relaxed));
+        dlog_infov("Allocating huge pages memory to %s", hugepage_filename);
+        int fd = open(hugepage_filename, O_CREAT | O_RDWR, 0755);
+        if (fd < 0) {
+            dlog_error2("open", fd);
+            return NULL;
+        }
         return dqdk_map(ctx, size, MAP_SHARED, fd);
     }
 
