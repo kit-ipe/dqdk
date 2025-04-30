@@ -1075,14 +1075,9 @@ u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz)
         return NULL;
     }
 
-    if (access(HUGETLBFS_PATH, F_OK) == 0) {
+    int fd = open(HUGETLBFS_PATH, O_CREAT | O_RDWR, 0755);
+    if (fd > 0) {
         dlog_infov("Allocating huge pages memory from %s", HUGETLBFS_PATH);
-        int fd = open(HUGETLBFS_PATH, O_CREAT | O_RDWR, 0755);
-        if (fd < 0) {
-            dlog_errorv("Cannot open %s", HUGETLBFS_PATH);
-            return NULL;
-        }
-
         return dqdk_map(ctx, size, MAP_SHARED, fd);
     }
 
