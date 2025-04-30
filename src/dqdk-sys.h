@@ -22,6 +22,7 @@
 #define HUGEPAGE_1GB_SIZE 1073741824UL
 #define HUGETLB_PATH_2MB "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
 #define HUGETLB_PATH_1GB "/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages"
+#define HUGETLBFS_PATH "/dev/hugetlbfs"
 #define HUGETLB_CALC_2MB(size) ((u32)ceil(size * 1.0 / HUGEPAGE_2MB_SIZE))
 #define HUGETLB_CALC_1GB(size) ((u32)ceil(size * 1.0 / HUGEPAGE_1GB_SIZE))
 

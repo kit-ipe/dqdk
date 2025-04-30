@@ -1035,14 +1035,13 @@ int dqdk_free(dqdk_ctx_t* ctx, u8* mem, u64 size)
     return munmap(mem, size);
 }
 
-u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags)
+static u8* dqdk_map(dqdk_ctx_t* ctx, u64 size, int flags, int fd)
 {
     (void)ctx;
-    void* map = mmap(NULL, size, PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS | flags, -1, 0);
+    void* map = mmap(NULL, size, PROT_READ | PROT_WRITE, flags, fd, 0);
 
     if (map == MAP_FAILED) {
-        dlog_error2("dqdk_malloc", (int)(u64)map);
+        dlog_error2("dqdk_map", (int)(u64)map);
         return NULL;
     }
 
@@ -1052,6 +1051,11 @@ u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags)
     }
 
     return (u8*)map;
+}
+
+u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags)
+{
+    return dqdk_map(ctx, size, MAP_PRIVATE | MAP_ANONYMOUS | flags, -1);
 }
 
 u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz)
@@ -1069,6 +1073,17 @@ u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz)
     case PAGE_4KB:
     default:
         return NULL;
+    }
+
+    if (access(HUGETLBFS_PATH, F_OK) == 0) {
+        dlog_infov("Allocating huge pages memory from %s", HUGETLBFS_PATH);
+        int fd = open(HUGETLBFS_PATH, O_CREAT | O_RDWR, 0755);
+        if (fd < 0) {
+            dlog_errorv("Cannot open %s", HUGETLBFS_PATH);
+            return NULL;
+        }
+
+        return dqdk_map(ctx, size, MAP_SHARED, fd);
     }
 
     needed_hgpg = get_hugepages(ctx->numa_node, pagesz) + additional_pages;
