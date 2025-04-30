@@ -127,9 +127,20 @@ char* get_numa_hugepages_path(int numanode, page_size_t pagesz)
     return path;
 }
 
-int reserve_hugepages(const char* path, int nb_hugepages)
+static int reserve_hugepages(const char* path, int nb_hugepages)
 {
+    if (access(path, W_OK) == 0)
+        return -1;
+
     return sys_write_int(path, nb_hugepages);
+}
+
+static int read_hugepages(const char* path)
+{
+    if (access(path, R_OK) == 0)
+        return -1;
+
+    return sys_read_uint(path);
 }
 
 int set_hugepages(int device_numanode, int howmany, page_size_t pagesz)
@@ -165,10 +176,10 @@ int get_hugepages(int device_numanode, page_size_t pagesz)
     if (device_numanode == -1) {
         switch (pagesz) {
         case PAGE_2MB:
-            return sys_read_uint(HUGETLB_PATH_2MB);
+            return read_hugepages(HUGETLB_PATH_2MB);
 
         case PAGE_1GB:
-            return sys_read_uint(HUGETLB_PATH_1GB);
+            return read_hugepages(HUGETLB_PATH_1GB);
 
         case PAGE_4KB:
         default:
@@ -177,7 +188,7 @@ int get_hugepages(int device_numanode, page_size_t pagesz)
     }
 
     path = get_numa_hugepages_path(device_numanode, pagesz);
-    ret = sys_read_uint(path);
+    ret = read_hugepages(path);
     free(path);
     return ret;
 }
