@@ -128,20 +128,23 @@ char* get_numa_hugepages_path(int numanode, page_size_t pagesz)
     return path;
 }
 
-static int reserve_hugepages(const char* path, int nb_hugepages)
-{
-    if (access(path, W_OK) == 0)
-        return -1;
-
-    return sys_write_int(path, nb_hugepages);
-}
-
 static int read_hugepages(const char* path)
 {
-    if (access(path, R_OK) == 0)
-        return -1;
-
     return sys_read_uint(path);
+}
+
+static int reserve_hugepages(const char* path, int nb_hugepages)
+{
+    int ret = sys_write_int(path, nb_hugepages);
+    if (ret < 0)
+        return ret;
+
+    int new_allocated = read_hugepages(path);
+
+    if (nb_hugepages != new_allocated)
+        dlog_infov("Requested %d huge pages, Allocated %d huge pages", nb_hugepages, new_allocated);
+
+    return new_allocated;
 }
 
 int set_hugepages(int device_numanode, int howmany, page_size_t pagesz)

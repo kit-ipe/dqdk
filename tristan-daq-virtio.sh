@@ -33,7 +33,8 @@ if [ $pci != "0000:01:00.0" ]; then
     echo "Please use 0000:01:00.0 PCI Address inside guest machine for the $NIC. Current=$pci"
     exit 1
 fi
-INTR_STRING=$(cat /proc/interrupts | grep "virtio1-input" | head -${Q} | awk '{printf "%s%s", sep, substr($1, 1, length($1)-1); sep=","} END{print ""}')
+# INTR_STRING=$(cat /proc/interrupts | grep "virtio1-input" | head -${Q} | awk '{printf "%s%s", sep, substr($1, 1, length($1)-1); sep=","} END{print ""}')
+INTR_STRING=778
 
 if [ $Q -eq 1 ]; then
     Q_STRING=0

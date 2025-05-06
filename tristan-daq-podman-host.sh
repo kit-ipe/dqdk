@@ -4,7 +4,7 @@ MODE=$2
 PORTS=$3
 DEBUG=$4
 
-Q=3
+Q=1
 if [[ "$#" -lt 3 ]]; then
     echo "$0: Incorrect number of parameters!"
     echo "$0 <NIC> <tristan-mode> <udp-port-range> [debug]"

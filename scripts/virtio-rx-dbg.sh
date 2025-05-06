@@ -7,13 +7,6 @@ else
     echo "example: $0 eth0"
     exit 1
 fi
-     #rx_queue_0_packets: 72223795
-     #rx_queue_0_bytes: 4333427830
-     #rx_queue_0_drops: 104446
-     #rx_queue_0_xdp_packets: 21757254
-     #rx_queue_0_xdp_tx: 0
-     #rx_queue_0_xdp_redirects: 21648455
-     #rx_queue_0_xdp_drops: 104446
 
 rx_xsk_packets=0
 rx_xsk_xdp_redirect=0

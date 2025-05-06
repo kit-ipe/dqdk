@@ -833,10 +833,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     }
 
     if (ctx->umem_flags & UMEM_FLAGS_USE_HGPG) {
-        int additional_pages = HUGETLB_CALC_2MB(ctx->umem_size * ctx->nbqueues);
-        int needed_hgpg = get_hugepages(ctx->numa_node, PAGE_2MB) + additional_pages;
-        set_hugepages(ctx->numa_node, needed_hgpg, PAGE_2MB);
-        dlog_infov("Huge pages are activated! Allocated 2MB pages=%d", needed_hgpg);
+        dlog_info("Huge pages are activated!");
     }
 
     if (nbirqs != nbqueues) {
@@ -1088,11 +1085,22 @@ u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz)
             dlog_error2("open", fd);
             return NULL;
         }
-        return dqdk_map(ctx, size, MAP_SHARED, fd);
+        
+        if (ftruncate(fd, size) < 0) {
+            dlog_error2("ftruncate", -1);
+            return NULL;
+        }
+
+
+        u8* map = dqdk_map(ctx, size, MAP_PRIVATE | MAP_HUGETLB | pagesz , fd);
+        close(fd);
+        unlink(hugepage_filename);
+        return map;
     }
 
     needed_hgpg = get_hugepages(ctx->numa_node, pagesz) + additional_pages;
-    set_hugepages(ctx->numa_node, needed_hgpg, pagesz);
+    int page = set_hugepages(ctx->numa_node, needed_hgpg, pagesz);
+    dlog_infov("Reserved huge pages are %d now", page);
 
     return dqdk_malloc(ctx, size, MAP_HUGETLB | pagesz);
 }
