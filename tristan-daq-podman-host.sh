@@ -4,7 +4,7 @@ MODE=$2
 PORTS=$3
 DEBUG=$4
 
-Q=1
+Q=3
 if [[ "$#" -lt 3 ]]; then
     echo "$0: Incorrect number of parameters!"
     echo "$0 <NIC> <tristan-mode> <udp-port-range> [debug]"
@@ -67,6 +67,9 @@ case "$DEBUG" in
 esac
 
 echo "Executing DQDK Command is: $CMD"
+power_start=$(cat /sys/class/powercap/intel-rapl:0/energy_uj)
 $CMD
+power_end=$(cat /sys/class/powercap/intel-rapl:0/energy_uj)
+echo "Energy Consumption (microjoules):" $((power_end - power_start))
 
 pkill mlx5-rx-dbg.sh

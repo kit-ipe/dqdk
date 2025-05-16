@@ -11,18 +11,18 @@ buildah run --env DEBIAN_FRONTEND=noninteractive $image_container -- apt update 
 buildah run --env DEBIAN_FRONTEND=noninteractive $image_container -- bash -c 'apt install -yqqq clang llvm libelf-dev libpcap-dev gcc-multilib build-essential linux-tools-common linux-tools-generic linux-headers-$(uname -r) m4 libnuma-dev liburing-dev'
 
 echo "Installing tools..."
-buildah run --env DEBIAN_FRONTEND=noninteractive $image_container -- apt install -yqqq ethtool iproute2 pciutils bsdextrautils iputils-ping
+buildah run --env DEBIAN_FRONTEND=noninteractive $image_container -- bash -c 'apt install -yqqq ethtool iproute2 pciutils bsdextrautils iputils-ping vim linux-tools-$(uname -r)'
 
 echo "Cloning DQDK Repository..."
-buildah copy $image_container .
 buildah config --workingdir /dqdk $image_container
+buildah copy $image_container .
 
 echo "Building DQDK..."
-buildah run $image_container -- make 2>&1 > /dev/null
+buildah run $image_container -- bash -c 'pwd && ls && make'
 
 echo "Installing DQDK..."
-buildah run $image_container -- make install 2>&1 > /dev/null
-buildah run --env DEBIAN_FRONTEND=noninteractive $image_container -- apt remove -yqq clang llvm gcc-multilib build-essential m4 git
+buildah run $image_container -- make install
+buildah run --env DEBIAN_FRONTEND=noninteractive $image_container -- bash -c 'apt remove -yqq clang llvm gcc-multilib build-essential m4 && apt autoremove -yqq'
 
 image_id=$(buildah images -q dqdk)
 if [ -z $image_id ]; then

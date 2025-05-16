@@ -18,6 +18,8 @@ if [[ "$nic_numa" == "-1" ]]; then
     nic_numa=0
 fi
 
+echo 0 > /sys/devices/system/node/node${nic_numa}/hugepages/hugepages-2048kB/nr_hugepages
+
 xdp-loader unload --all $NIC
 source mlx5-optimize.sh $NIC $Q
 
@@ -67,6 +69,8 @@ case "$DEBUG" in
 esac
 
 echo "Executing DQDK Command is: $CMD"
+power_start=$(cat /sys/class/powercap/intel-rapl:0/energy_uj)
 $CMD
-
+power_end=$(cat /sys/class/powercap/intel-rapl:0/energy_uj)
+echo "Energy Consumption (microjoules):" $((power_end - power_start))
 pkill mlx5-rx-dbg.sh
