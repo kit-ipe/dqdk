@@ -95,7 +95,15 @@ dqdk_always_inline int tristan_daq_energyhisto(tristan_private_t* private, dqdk_
             dlog_infov("Evnt %d: Energy=%u; TimeStamp=%llu; Channel=%d; Mask=%d\n", evt.id,
                 evt.energy, (u64)evt.timestamp, evt.channel, evt.mask);
         }
+
         int histo_idx = log2l(evt.mask);
+        if (evt.channel >= CHNLS_COUNT
+            || histo_idx >= HISTO_COUNT
+            || evt.energy >= HISTO_BINS) {
+            dlog_errorv("Out of bounds Energy Event: Channel ID=%u, Histogram Index=%u, Energy=%u", evt.channel, histo_idx, evt.energy);
+            return -1;
+        }
+
         u32* counter = &private->histo->channels[evt.channel].histograms[histo_idx][evt.energy];
         atomic_fetch_add_explicit(counter, 1, memory_order_relaxed);
     }

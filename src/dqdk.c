@@ -236,7 +236,7 @@ static dqdk_always_inline u8* prefetch_frame(dqdk_worker_t* xsk, int idx)
             (worker)->stats.param.raw[(worker)->stats.param.raw_idx++] = latency;                                               \
     } while (0)
 
-static dqdk_always_inline void dqdk_tlb_test(dqdk_worker_t* xsk, u8* frame, u32 len)
+static dqdk_always_inline int dqdk_tlb_test(dqdk_worker_t* xsk, u8* frame, u32 len)
 {
     (void)xsk;
     (void)frame;
@@ -249,10 +249,12 @@ static dqdk_always_inline void dqdk_tlb_test(dqdk_worker_t* xsk, u8* frame, u32 
     u32 addr = (rand() % (nbpages + 1)) * PAGE_SIZE;
     private->bulk[addr]++;
     // }
+    return 0;
 }
 
-static dqdk_always_inline void process_frame(dqdk_worker_t* xsk, u8* frame, u32 len)
+static dqdk_always_inline int process_frame(dqdk_worker_t* xsk, u8* frame, u32 len)
 {
+    int ret = 0;
     u32 datalen = 0;
     u8* data = get_udp_payload(xsk, frame, len, &datalen);
 
@@ -264,18 +266,25 @@ static dqdk_always_inline void process_frame(dqdk_worker_t* xsk, u8* frame, u32 
 
     tristan_private_t* private = (tristan_private_t*)xsk->private;
     if (dqdk_unlikely(private->mode == TRISTAN_MODE_DROP || datalen == 0 || data == NULL))
-        return;
+        return -1;
 
     if (private->mode == TRISTAN_MODE_TLB)
-        dqdk_tlb_test(xsk, data, datalen);
+        ret = dqdk_tlb_test(xsk, data, datalen);
     else if (private->mode == TRISTAN_MODE_WAVEFORM)
-        tristan_daq_waveform(private, xsk, data, datalen);
+        ret = tristan_daq_waveform(private, xsk, data, datalen);
     else if (private->mode == TRISTAN_MODE_ENERGYHISTO)
-        tristan_daq_energyhisto(private, xsk, data, datalen);
+        ret = tristan_daq_energyhisto(private, xsk, data, datalen);
+    else {
+        dlog_error("Unknown mode cannot be handled");
+        ret = -1;
+    }
+
+    return ret;
 }
 
 static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
 {
+    int ret = 0;
     umem_info_t* umem = xsk->umem_info;
     u32 idx_rx = 0, idx_fq;
     struct xsk_ring_prod* fq = &umem->fq0;
@@ -295,15 +304,12 @@ static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
             recvfrom(xsk_socket__fd(xsk->socket), NULL, 0, MSG_DONTWAIT, NULL, NULL);
         }
 
-        return ECOMM;
+        ret = -ECOMM;
+        goto exit;
     }
 
-    int ret = xsk_ring_prod__reserve(fq, rcvd, &idx_fq);
+    ret = xsk_ring_prod__reserve(fq, rcvd, &idx_fq);
     while (ret != rcvd) {
-        if (ret < 0) {
-            return -ret;
-        }
-
         if (xsk->busy_poll || xsk_ring_prod__needs_wakeup(fq)) {
             xsk->stats.rx_fill_fail_polls++;
             recvfrom(xsk_socket__fd(xsk->socket), NULL, 0, MSG_DONTWAIT, NULL, NULL);
@@ -317,7 +323,10 @@ static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
     for (int i = 0; i < rcvd; i++) {
         const struct xdp_desc* desc = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++);
         u8* frame = xsk_umem__get_data(xsk->umem_info->buffer, desc->addr);
-        process_frame(xsk, frame, desc->len);
+        if (process_frame(xsk, frame, desc->len) < 0) {
+            ret = -1;
+            goto exit;
+        }
     }
 
     xsk_ring_cons__release(&xsk->rx, rcvd);
@@ -339,7 +348,8 @@ static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
         }
     }
 
-    return 0;
+exit:
+    return ret;
 }
 
 static int run_daq(dqdk_worker_t* xsk)
@@ -348,7 +358,9 @@ static int run_daq(dqdk_worker_t* xsk)
 
     t0 = clock_nsecs_mono();
     while (dqdk_unlikely(!break_flag)) {
-        do_daq(xsk);
+        int ret = do_daq(xsk);
+        if (ret < 0)
+            return ret;
     }
     t1 = clock_nsecs_mono();
 
@@ -554,19 +566,85 @@ static void* dqdk_worker(void* ptr)
     dqdk_worker_t* xsk = wobj->xsk;
     dqdk_ctx_t* ctx = wobj->ctx;
 
+    if (!ctx->barrier_init || (ret = pthread_barrier_wait(&ctx->barrier)) > 0) {
+        dlog_error2("pthread_barrier_wait", ret);
+        goto error;
+    }
+
+    ret = run_daq(xsk);
+    if (ret >= 0)
+        goto cleanup;
+
+error:
+    dlog_errorv("Worker %d is dead!", xsk->index);
+    atomic_store(&ctx->status, DQDK_STATUS_ERROR);
+    if (!ctx->barrier_init || (ret = pthread_barrier_wait(&ctx->barrier)) > 0)
+        dlog_error2("pthread_barrier_wait", ret);
+
+cleanup:
+    free(wobj);
+    return (void*)(long)ret;
+}
+
+int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* noshared_private)
+{
+    static int worker_index = 0;
+    int ret;
+
+    dqdk_worker_t* xsk = calloc(1, sizeof(dqdk_worker_t));
+    if (xsk == NULL) {
+        ret = -1;
+        goto error;
+    }
+
+    ctx->workers[worker_index] = xsk;
+
+    struct worker_obj* wobj = calloc(1, sizeof(struct worker_obj));
+    if (wobj == NULL) {
+        ret = -1;
+        goto error;
+    }
+
+    wobj->ctx = ctx;
+    wobj->xsk = xsk;
+
+    xsk->queue_id = qid;
+    xsk->index = worker_index++;
+    xsk->private = ctx->private;
+    xsk->dedicated_private = noshared_private;
+    xsk->batch_size = ctx->batch_size;
+    xsk->busy_poll = ctx->busy_poll;
+    xsk->debug_flags = ctx->debug_flags;
+    xsk->thread_attrs = calloc(1, sizeof(pthread_attr_t));
+    if (xsk->thread_attrs == NULL) {
+        ret = -1;
+        goto error;
+    }
+
+    if (xsk->debug_flags & DQDK_DEBUG_LATENCYDUMP) {
+        xsk->stats.queuing_latency.raw = calloc(DQDK_MAX_LATENCY_METRICS, sizeof(s64));
+        xsk->stats.processing_latency.raw = calloc(DQDK_MAX_LATENCY_METRICS, sizeof(s64));
+        if (xsk->stats.processing_latency.raw == NULL || xsk->stats.queuing_latency.raw == NULL) {
+            ret = -1;
+            goto error;
+        }
+    }
+
     xsk->umem_info = umem_info_create(ctx);
     if (xsk->umem_info == NULL) {
         dlog_error("Error allocating umem");
+        ret = -1;
         goto error;
     }
 
     ret = umem_configure(xsk->umem_info);
     if (ret)
-        goto error;
+        return -1;
 
     ret = xsk_configure(ctx, xsk);
     if (ret) {
         dlog_error2("xsk_configure", ret);
+        ret = -1;
         goto error;
     }
 
@@ -575,6 +653,7 @@ static void* dqdk_worker(void* ptr)
     ret = bpf_map__update_elem(ctx->forwarder->maps.xsks_map, &mapkey, sizeof(u32), &sockfd, sizeof(u32), BPF_ANY);
     if (ret) {
         dlog_error2("bpf_map__update_elem", ret);
+        ret = -1;
         goto error;
     }
 
@@ -592,56 +671,25 @@ static void* dqdk_worker(void* ptr)
         }
     }
 
-    if (!ctx->barrier_init || (ret = pthread_barrier_wait(&ctx->barrier)) > 0) {
-        dlog_error2("pthread_barrier_wait", ret);
+    ret = pthread_attr_init(xsk->thread_attrs);
+    if (ret) {
+
+        ret = -1;
         goto error;
     }
 
-    ret = run_daq(xsk);
-    goto cleanup;
-
-error:
-    dlog_errorv("Worker %d is dead!", xsk->index);
-    if (!ctx->barrier_init || (ret = pthread_barrier_wait(&ctx->barrier)) > 0)
-        dlog_error2("pthread_barrier_wait", ret);
-
-cleanup:
-    free(wobj);
-    return NULL;
-}
-
-int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* noshared_private)
-{
-    static int worker_index = 0;
-    int ret;
-
-    dqdk_worker_t* xsk = calloc(1, sizeof(dqdk_worker_t));
-    ctx->workers[worker_index] = xsk;
-
-    struct worker_obj* wobj = calloc(1, sizeof(struct worker_obj));
-    wobj->ctx = ctx;
-    wobj->xsk = xsk;
-
-    xsk->queue_id = qid;
-    xsk->index = worker_index++;
-    xsk->private = ctx->private;
-    xsk->dedicated_private = noshared_private;
-    xsk->batch_size = ctx->batch_size;
-    xsk->busy_poll = ctx->busy_poll;
-    xsk->debug_flags = ctx->debug_flags;
-    xsk->thread_attrs = calloc(1, sizeof(pthread_attr_t));
-
-    if (xsk->debug_flags & DQDK_DEBUG_LATENCYDUMP) {
-        xsk->stats.queuing_latency.raw = calloc(DQDK_MAX_LATENCY_METRICS, sizeof(s64));
-        xsk->stats.processing_latency.raw = calloc(DQDK_MAX_LATENCY_METRICS, sizeof(s64));
+    ret = dqdk_set_affinity(ctx->hyperthreading, ctx->samecore, irq, &ctx->cpu_mask, &xsk->cset, xsk->thread_attrs);
+    if (ret) {
+        ret = -1;
+        goto error;
     }
 
-    pthread_attr_init(xsk->thread_attrs);
-    ret = dqdk_set_affinity(ctx->hyperthreading, ctx->samecore, irq, &ctx->cpu_mask, &xsk->cset, xsk->thread_attrs);
-    if (ret)
-        return -1;
-
-    return pthread_create(&xsk->thread, xsk->thread_attrs, dqdk_worker, (void*)wobj);
+    ret = pthread_create(&xsk->thread, xsk->thread_attrs, dqdk_worker, (void*)wobj);
+    if (!ret)
+        return 0;
+error:
+    atomic_store(&ctx->status, DQDK_STATUS_ERROR);
+    return ret;
 }
 
 static int dqdk_ctx_free(dqdk_ctx_t* ctx)
@@ -678,14 +726,21 @@ int dqdk_waitall(dqdk_ctx_t* ctx)
     dqdk_worker_t* worker;
     break_flag = 1;
 
+    void* thread_ret_ptr = NULL;
+
     if (!ctx)
         return -1;
 
-    if (ctx->status > DQDK_STATUS_NONE) {
+    if (atomic_load(&ctx->status) > DQDK_STATUS_NONE) {
         for (u32 _i = 0; _i < ctx->nbqueues; _i++) {
             worker = ctx->workers[_i];
-            if (worker)
-                pthread_join(worker->thread, NULL);
+            if (worker) {
+                pthread_join(worker->thread, &thread_ret_ptr);
+                if (thread_ret_ptr != NULL) {
+                    dlog_errorv("Worker %d failed and exited", worker->index);
+                    atomic_store(&ctx->status, DQDK_STATUS_ERROR);
+                }
+            }
         }
     }
 
@@ -780,7 +835,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     ctx->libbpf_flags = XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD;
     ctx->bind_flags = (ctx->needs_wakeup ? XDP_USE_NEED_WAKEUP : 0) | (xdp_mode == XDP_MODE_SKB ? XDP_COPY : 0);
     ctx->xdp_flags = 0;
-    ctx->status = DQDK_STATUS_NONE;
+    atomic_store(&ctx->status, DQDK_STATUS_NONE);
 
     if (ctx->ifspeed < 0) {
         dlog_error("Error fetching link speed");
@@ -899,7 +954,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
         return NULL;
     }
     ctx->barrier_init = true;
-    ctx->status = DQDK_STATUS_STARTED;
+    atomic_store(&ctx->status, DQDK_STATUS_STARTED);
 
     return ctx;
 }
@@ -915,20 +970,29 @@ int dqdk_for_ports_range(dqdk_ctx_t* ctx, u16 start, u16 end)
 
 int dqdk_start(dqdk_ctx_t* ctx)
 {
-    if (!ctx)
-        return -1;
+    int ret = 0;
+    if (!ctx) {
+        ret = -1;
+        goto error;
+    }
 
     if (ctx->nbports == 0) {
         dlog_error("Please provide a range of source ports to accept data on");
-        return -1;
+        ret = -1;
+        goto error;
     }
 
-    if (!ctx->barrier_init || pthread_barrier_wait(&ctx->barrier) > 0)
-        return -1;
+    if (!ctx->barrier_init || pthread_barrier_wait(&ctx->barrier) > 0) {
+        ret = -1;
+        goto error;
+    }
 
-    ctx->status = DQDK_STATUS_READY;
+    atomic_store(&ctx->status, DQDK_STATUS_READY);
+    return ret;
 
-    return 0;
+error:
+    atomic_store(&ctx->status, DQDK_STATUS_ERROR);
+    return ret;
 }
 
 static void dqdk_latencystats_dump(dqdk_worker_t* worker, FILE* file)
@@ -955,7 +1019,7 @@ int dqdk_ctx_fini(dqdk_ctx_t* ctx)
     if (!ctx)
         return -1;
 
-    if (ctx->status > DQDK_STATUS_NONE) {
+    if (atomic_load(&ctx->status) > DQDK_STATUS_NONE) {
         FILE* file = NULL;
 
         if (ctx->debug_flags & DQDK_DEBUG_LATENCYDUMP) {
@@ -1059,9 +1123,6 @@ u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags)
 
 u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz)
 {
-    struct stat st;
-    char hugepage_filename[PATH_MAX];
-
     int additional_pages = 0, needed_hgpg = 0;
 
     switch (pagesz) {
@@ -1077,26 +1138,27 @@ u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz)
         return NULL;
     }
 
-    if (stat(HUGETLBFS_PATH, &st) == 0 && S_ISDIR(st.st_mode)) {
-        snprintf(hugepage_filename, PATH_MAX, HUGETLBFS_PATH "/hugefile%d", atomic_fetch_add_explicit(&ctx->huge_allocations, 1, memory_order_relaxed));
-        dlog_infov("Allocating huge pages memory to %s", hugepage_filename);
-        int fd = open(hugepage_filename, O_CREAT | O_RDWR, 0755);
-        if (fd < 0) {
-            dlog_error2("open", fd);
-            return NULL;
-        }
-        
-        if (ftruncate(fd, size) < 0) {
-            dlog_error2("ftruncate", -1);
-            return NULL;
-        }
+    // struct stat st;
+    // if (stat(HUGETLBFS_PATH, &st) == 0 && S_ISDIR(st.st_mode)) {
+    //     char hugepage_filename[PATH_MAX];
+    //     snprintf(hugepage_filename, PATH_MAX, HUGETLBFS_PATH "/dqdk%d", atomic_fetch_add_explicit(&ctx->huge_allocations, 1, memory_order_relaxed));
+    //     dlog_infov("Allocating huge pages memory to %s", hugepage_filename);
+    //     int fd = open(hugepage_filename, O_CREAT | O_RDWR, 0755);
+    //     if (fd < 0) {
+    //         dlog_error2("open", fd);
+    //         return NULL;
+    //     }
 
+    //     if (ftruncate(fd, size) < 0) {
+    //         dlog_error2("ftruncate", -1);
+    //         return NULL;
+    //     }
 
-        u8* map = dqdk_map(ctx, size, MAP_PRIVATE | MAP_HUGETLB | pagesz , fd);
-        close(fd);
-        unlink(hugepage_filename);
-        return map;
-    }
+    //     u8* map = dqdk_map(ctx, size, MAP_PRIVATE | MAP_HUGETLB | pagesz, fd);
+    //     close(fd);
+    //     unlink(hugepage_filename);
+    //     return map;
+    // }
 
     needed_hgpg = get_hugepages(ctx->numa_node, pagesz) + additional_pages;
     int page = set_hugepages(ctx->numa_node, needed_hgpg, pagesz);
@@ -1341,7 +1403,7 @@ int main(int argc, char** argv)
 
         if (private.histo) {
             dlog_info("Saving TRISTAN Histogram, this may take a while...");
-            snprintf(path_name, PATH_MAX, "tristan-histo-%d-%d-%d-%d%d.bin", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
+            snprintf(path_name, PATH_MAX, "tristan-histo-%d-%2d-%2d-%2d%2d.bin", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
             dqdk_blk_status_t stats = dqdk_blk_dump(path_name, FILE_BSIZE, TRISTAN_HISTO_SZ, private.histo);
             if (stats.status != 0)
                 dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
@@ -1351,7 +1413,7 @@ int main(int argc, char** argv)
 
         if (private.bulk && private.head - private.bulk != 0) {
             dlog_infov("Saving TRISTAN Waveform (Total Bytes=%lu), this may take a while...", private.head - private.bulk);
-            snprintf(path_name, PATH_MAX, "tristan-raw-%d-%d-%d-%d%d.bin", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
+            snprintf(path_name, PATH_MAX, "tristan-raw-%d-%2d-%2d-%2d%2d.bin", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
             dqdk_blk_status_t stats = dqdk_blk_dump(path_name, FILE_BSIZE, private.head - private.bulk, private.bulk);
             if (stats.status != 0)
                 dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);

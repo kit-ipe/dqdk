@@ -20,11 +20,11 @@ fi
 
 echo 0 > /sys/devices/system/node/node${nic_numa}/hugepages/hugepages-2048kB/nr_hugepages
 
+ip link set dev $NIC up
 xdp-loader unload --all $NIC
 source mlx5-optimize.sh $NIC $Q
 
 pci=`ethtool -i $NIC | grep 'bus-info:' | sed 's/bus-info: //'`
-
 INTR_STRING=$(cat /proc/interrupts | grep "mlx5_comp[0-9]*@pci:${pci}" | head -${Q} | awk '{printf "%s%s", sep, substr($1, 1, length($1)-1); sep=","} END{print ""}')
 
 if [ $Q -eq 1 ]; then

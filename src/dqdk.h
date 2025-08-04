@@ -99,7 +99,8 @@ typedef enum {
     DQDK_STATUS_NONE,
     DQDK_STATUS_STARTED,
     DQDK_STATUS_READY,
-    DQDK_STATUS_CLOSED
+    DQDK_STATUS_CLOSED,
+    DQDK_STATUS_ERROR,
 } dqdk_status_t;
 
 typedef struct {

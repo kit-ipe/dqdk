@@ -18,7 +18,7 @@
 
 static char* dqdk_get_status_string(dqdk_status_t status)
 {
-    char* values[] = { "NONE", "STARTED", "READY", "CLOSED" };
+    char* values[] = { "NONE", "STARTED", "READY", "CLOSED", "ERROR" };
     return values[status];
 }
 
@@ -160,7 +160,7 @@ int dqdk_controller_wait(dqdk_controller_t* controller, dqdk_ctx_t* ctx)
 
                     cmd_string = dqdk_get_cmd_string(DQDK_CMD_QUERY);
                     if (!strncmp(buffer, cmd_string, strlen(cmd_string))) {
-                        char* status_string = dqdk_get_status_string(ctx->status);
+                        char* status_string = dqdk_get_status_string(atomic_load(&ctx->status));
                         send(fd, status_string, strlen(status_string), 0);
                     } else {
                         dlog_errorv("Ignoring unknown command: %s", buffer);
@@ -180,21 +180,36 @@ int dqdk_controller_wait(dqdk_controller_t* controller, dqdk_ctx_t* ctx)
     return 0;
 }
 
-int dqdk_controller_closed(dqdk_controller_t* controller)
+int dqdk_controller_report_status(dqdk_controller_t* controller, dqdk_status_t status)
 {
     if (controller == NULL)
-        return -1;
+        return -EINVAL;
 
-    char* status_string = dqdk_get_status_string(DQDK_STATUS_CLOSED);
+    char* status_string = dqdk_get_status_string(status);
     int sent = send(controller->clientfd, status_string, strlen(status_string), 0);
     if (sent <= 0) {
         dlog_error2("send", sent);
-        return -1;
+        return -errno;
     }
 
-    dlog_info("DQDK status changed to closed!");
-    dqdk_controller_free(controller);
+    dlog_infov("DQDK status changed to %s!", status_string);
     return 0;
+}
+
+int dqdk_controller_closed(dqdk_controller_t* controller)
+{
+    int ret = dqdk_controller_report_status(controller, DQDK_STATUS_CLOSED);
+    if (controller)
+        dqdk_controller_free(controller);
+    return ret;
+}
+
+int dqdk_controller_error(dqdk_controller_t* controller)
+{
+    int ret = dqdk_controller_report_status(controller, DQDK_STATUS_ERROR);
+    if (controller)
+        dqdk_controller_free(controller);
+    return ret;
 }
 
 #endif
