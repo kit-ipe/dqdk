@@ -216,14 +216,14 @@ dqdk_always_inline u8* get_udp_payload(dqdk_worker_t* xsk, u8* buffer, u32 len, 
     return (u8*)(udp + 1);
 }
 
-static dqdk_always_inline u8* prefetch_frame(dqdk_worker_t* xsk, int idx)
-{
-    u64 addr = xsk_ring_cons__rx_desc(&xsk->rx, idx)->addr;
-    u8* frame = xsk_umem__get_data(xsk->umem_info->buffer, addr);
-    dqdk_prefetch(frame);
+// static dqdk_always_inline u8* prefetch_frame(dqdk_worker_t* xsk, int idx)
+// {
+//     u64 addr = xsk_ring_cons__rx_desc(&xsk->rx, idx)->addr;
+//     u8* frame = xsk_umem__get_data(xsk->umem_info->buffer, addr);
+//     dqdk_prefetch(frame);
 
-    return frame;
-}
+//     return frame;
+// }
 
 #define WORKER_LATENCY(worker, param, latency)                                                                                  \
     do {                                                                                                                        \
@@ -268,17 +268,24 @@ static dqdk_always_inline int process_frame(dqdk_worker_t* xsk, u8* frame, u32 l
     if (dqdk_unlikely(private->mode == TRISTAN_MODE_DROP || datalen == 0 || data == NULL))
         return -1;
 
-    if (private->mode == TRISTAN_MODE_TLB)
+    switch (private->mode) {
+    case TRISTAN_MODE_TLB:
         ret = dqdk_tlb_test(xsk, data, datalen);
-    else if (private->mode == TRISTAN_MODE_WAVEFORM)
+        break;
+    case TRISTAN_MODE_WAVEFORM:
         ret = tristan_daq_waveform(private, xsk, data, datalen);
-    else if (private->mode == TRISTAN_MODE_ENERGYHISTO)
+        break;
+    case TRISTAN_MODE_LISTWAVE:
+        ret = tristan_daq_listwave(private, xsk, data, datalen);
+        break;
+    case TRISTAN_MODE_ENERGYHISTO:
         ret = tristan_daq_energyhisto(private, xsk, data, datalen);
-    else {
+        break;
+    default:
         dlog_error("Unknown mode cannot be handled");
         ret = -1;
+        break;
     }
-
     return ret;
 }
 
@@ -319,6 +326,7 @@ static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
     }
 
     ++xsk->stats.rx_successful_fills;
+    xsk->stats.rcvd_frames += rcvd;
 
     for (int i = 0; i < rcvd; i++) {
         const struct xdp_desc* desc = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++);
@@ -331,8 +339,6 @@ static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
 
     xsk_ring_cons__release(&xsk->rx, rcvd);
     xsk_ring_prod__submit(fq, rcvd);
-
-    xsk->stats.rcvd_frames += rcvd;
 
     if (xsk->debug_flags && xsk->soft_timestamp != BAD_CLOCK) {
         u64 postproc_ts = clock_nsecs_real();
@@ -358,9 +364,7 @@ static int run_daq(dqdk_worker_t* xsk)
 
     t0 = clock_nsecs_mono();
     while (dqdk_unlikely(!break_flag)) {
-        int ret = do_daq(xsk);
-        if (ret < 0)
-            return ret;
+        do_daq(xsk);
     }
     t1 = clock_nsecs_mono();
 
@@ -1049,7 +1053,7 @@ int dqdk_ctx_fini(dqdk_ctx_t* ctx)
 
 void dqdk_dump_stats(dqdk_ctx_t* ctx)
 {
-    dqdk_worker_t* worker;
+    dqdk_stats_t* worker_stats;
     dqdk_stats_t avg_stats;
 
     if (ctx == NULL)
@@ -1058,32 +1062,32 @@ void dqdk_dump_stats(dqdk_ctx_t* ctx)
     memset(&avg_stats, 0, sizeof(avg_stats));
 
     for (u32 i = 0; i < ctx->nbqueues; i++) {
-        worker = ctx->workers[i];
-        xsk_stats_dump(worker);
-        avg_stats.runtime = MAX(avg_stats.runtime, worker->stats.runtime);
-        avg_stats.rcvd_pkts += worker->stats.rcvd_pkts;
-        avg_stats.rcvd_frames += worker->stats.rcvd_frames;
+        worker_stats = dqdk_worker_stats(ctx, i);
+        xsk_stats_dump(ctx->workers[i]);
+        avg_stats.runtime = MAX(avg_stats.runtime, worker_stats->runtime);
+        avg_stats.rcvd_pkts += worker_stats->rcvd_pkts;
+        avg_stats.rcvd_frames += worker_stats->rcvd_frames;
 
-        avg_stats.fail_polls += worker->stats.fail_polls;
-        avg_stats.invalid_ip_pkts += worker->stats.invalid_ip_pkts;
-        avg_stats.invalid_udp_pkts += worker->stats.invalid_udp_pkts;
-        avg_stats.rx_empty_polls += worker->stats.rx_empty_polls;
-        avg_stats.rx_fill_fail_polls += worker->stats.rx_fill_fail_polls;
-        avg_stats.timeout_polls += worker->stats.timeout_polls;
-        avg_stats.rx_successful_fills += worker->stats.rx_successful_fills;
+        avg_stats.fail_polls += worker_stats->fail_polls;
+        avg_stats.invalid_ip_pkts += worker_stats->invalid_ip_pkts;
+        avg_stats.invalid_udp_pkts += worker_stats->invalid_udp_pkts;
+        avg_stats.rx_empty_polls += worker_stats->rx_empty_polls;
+        avg_stats.rx_fill_fail_polls += worker_stats->rx_fill_fail_polls;
+        avg_stats.timeout_polls += worker_stats->timeout_polls;
+        avg_stats.rx_successful_fills += worker_stats->rx_successful_fills;
 
-        avg_stats.xstats.rx_dropped += worker->stats.xstats.rx_dropped;
-        avg_stats.xstats.rx_invalid_descs += worker->stats.xstats.rx_invalid_descs;
-        avg_stats.xstats.rx_ring_full += worker->stats.xstats.rx_ring_full;
-        avg_stats.xstats.rx_fill_ring_empty_descs += worker->stats.xstats.rx_fill_ring_empty_descs;
+        avg_stats.xstats.rx_dropped += worker_stats->xstats.rx_dropped;
+        avg_stats.xstats.rx_invalid_descs += worker_stats->xstats.rx_invalid_descs;
+        avg_stats.xstats.rx_ring_full += worker_stats->xstats.rx_ring_full;
+        avg_stats.xstats.rx_fill_ring_empty_descs += worker_stats->xstats.rx_fill_ring_empty_descs;
 
-        avg_stats.queuing_latency.sum += worker->stats.queuing_latency.sum;
-        avg_stats.queuing_latency.min = avg_stats.queuing_latency.min == 0 ? worker->stats.queuing_latency.min : MIN(avg_stats.queuing_latency.min, worker->stats.queuing_latency.min);
-        avg_stats.queuing_latency.max = MAX(avg_stats.queuing_latency.max, worker->stats.queuing_latency.max);
+        avg_stats.queuing_latency.sum += worker_stats->queuing_latency.sum;
+        avg_stats.queuing_latency.min = avg_stats.queuing_latency.min == 0 ? worker_stats->queuing_latency.min : MIN(avg_stats.queuing_latency.min, worker_stats->queuing_latency.min);
+        avg_stats.queuing_latency.max = MAX(avg_stats.queuing_latency.max, worker_stats->queuing_latency.max);
 
-        avg_stats.processing_latency.sum += worker->stats.processing_latency.sum;
-        avg_stats.processing_latency.min = avg_stats.processing_latency.min == 0 ? worker->stats.processing_latency.min : MIN(avg_stats.processing_latency.min, worker->stats.processing_latency.min);
-        avg_stats.processing_latency.max = MAX(avg_stats.processing_latency.max, worker->stats.processing_latency.max);
+        avg_stats.processing_latency.sum += worker_stats->processing_latency.sum;
+        avg_stats.processing_latency.min = avg_stats.processing_latency.min == 0 ? worker_stats->processing_latency.min : MIN(avg_stats.processing_latency.min, worker_stats->processing_latency.min);
+        avg_stats.processing_latency.max = MAX(avg_stats.processing_latency.max, worker_stats->processing_latency.max);
     }
 
     if (ctx->nbqueues != 1) {
@@ -1165,6 +1169,21 @@ u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz)
     dlog_infov("Reserved huge pages are %d now", page);
 
     return dqdk_malloc(ctx, size, MAP_HUGETLB | pagesz);
+}
+
+int dqdk_uses_hugepages(dqdk_ctx_t* ctx)
+{
+    return ctx->umem_flags & UMEM_FLAGS_USE_HGPG;
+}
+
+u32 dqdk_workers_count(dqdk_ctx_t* ctx)
+{
+    return ctx->nbqueues;
+}
+
+dqdk_stats_t* dqdk_worker_stats(dqdk_ctx_t* ctx, u32 worker_index)
+{
+    return &ctx->workers[worker_index]->stats;
 }
 
 int main(int argc, char** argv)
@@ -1286,14 +1305,16 @@ int main(int argc, char** argv)
             opt_samecore = 1;
             break;
         case 'm':
-            if (strcmp(optarg, "tlb") == 0)
+            if (strcmp(optarg, tristan_modes[TRISTAN_MODE_TLB]) == 0)
                 mode = TRISTAN_MODE_TLB;
-            else if (strcmp(optarg, "drop") == 0)
+            else if (strcmp(optarg, tristan_modes[TRISTAN_MODE_DROP]) == 0)
                 mode = TRISTAN_MODE_DROP;
-            else if (strcmp(optarg, "energy-histo") == 0)
+            else if (strcmp(optarg, tristan_modes[TRISTAN_MODE_ENERGYHISTO]) == 0)
                 mode = TRISTAN_MODE_ENERGYHISTO;
-            else if (strcmp(optarg, "waveform") == 0)
+            else if (strcmp(optarg, tristan_modes[TRISTAN_MODE_WAVEFORM]) == 0)
                 mode = TRISTAN_MODE_WAVEFORM;
+            else if (strcmp(optarg, tristan_modes[TRISTAN_MODE_LISTWAVE]) == 0)
+                mode = TRISTAN_MODE_LISTWAVE;
             else {
                 dlog_errorv("Unknown TRISTAN mode: %s", optarg);
                 exit(EXIT_FAILURE);
@@ -1328,47 +1349,19 @@ int main(int argc, char** argv)
 
     dqdk_for_ports_range(ctx, start_port, end_port);
 
-    private.mode = mode;
-    if (mode != TRISTAN_MODE_DROP) {
-        dlog_info("Allocating TRISTAN Memory...");
-        if (mode == TRISTAN_MODE_ENERGYHISTO
-            || mode == TRISTAN_MODE_LISTWAVE) {
-            if (opt_umem_flags & UMEM_FLAGS_USE_HGPG) {
-                private.histo = (tristan_histo_t*)dqdk_huge_malloc(ctx, TRISTAN_HISTO_SZ, PAGE_2MB);
-            } else {
-                private.histo = (tristan_histo_t*)dqdk_malloc(ctx, TRISTAN_HISTO_SZ, 0);
-            }
-
-            if (private.histo == NULL) {
-                dlog_error("Error allocating huge pages memory for TRISTAN histograms");
-                goto cleanup;
-            }
-        }
-
-        if (mode == TRISTAN_MODE_TLB
-            || mode == TRISTAN_MODE_WAVEFORM
-            || mode == TRISTAN_MODE_LISTWAVE) {
-            if (opt_duration < 0) {
-                dlog_error("TRISTAN Modes: waveform and listwave require setting a duration");
-                goto cleanup;
-            }
-
-            /* Calculate the size of the needed buffer using link speed, duration and packet size
-             * Convert link speed to bytes per second from Mbits per second,
-             * Convert duration from milliseconds to seconds
-             */
-            double bulk_size = ((ctx->ifspeed * 1.0 / 8) * 1024 * 1024) * (opt_duration * 1.0 / 1000);
-            private.max_bulk_size = (u64)ceil(bulk_size);
-            private.bulk = opt_umem_flags & UMEM_FLAGS_USE_HGPG ? dqdk_huge_malloc(ctx, private.max_bulk_size, PAGE_2MB) : dqdk_malloc(ctx, private.max_bulk_size, 0);
-            private.head = private.bulk;
-            private.bulk_size = 0;
-
-            if (private.bulk == NULL) {
-                dlog_error("Error allocating huge pages memory for TRISTAN memory");
-                goto cleanup;
-            }
-        }
+    /* Calculate the size of the needed buffer using link speed, duration and packet size
+     * Convert link speed to bytes per second from Mbits per second,
+     * Convert duration from milliseconds to seconds
+     */
+    if ((mode == TRISTAN_MODE_TLB || mode == TRISTAN_MODE_WAVEFORM || mode == TRISTAN_MODE_LISTWAVE)
+        && opt_duration <= 0) {
+        dlog_error("TRISTAN Modes: waveform and listwave require setting a duration");
+        goto cleanup;
     }
+
+    u64 bulk_size = (u64)ceil(((ctx->ifspeed * 1.0 / 8) * 1024 * 1024) * (opt_duration * 1.0 / 1000));
+    if (tristan_init(ctx, &private, mode, bulk_size) < 0)
+        goto cleanup;
 
     for (u32 i = 0; i < nbqueues; i++) {
         if (dqdk_worker_init(ctx, opt_queues[i], opt_irqs[i], NULL) < 0)
@@ -1380,7 +1373,7 @@ int main(int argc, char** argv)
         goto cleanup;
     }
 
-    dlog_info("DAQ Started!");
+    dlog_infov("TRISTAN DAQ in mode %s Started!", tristan_modes[mode]);
 
     if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB) {
         int ret = dqdk_controller_wait(controller, ctx);
@@ -1393,46 +1386,13 @@ int main(int argc, char** argv)
 
     dlog_info("Closing...");
 
-    if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB) {
-        struct tm tm = { 0 };
-        time_t tval = time(NULL);
-        char path_name[PATH_MAX];
-
-        if (tval != ((time_t)-1))
-            tm = *localtime(&tval);
-
-        if (private.histo) {
-            dlog_info("Saving TRISTAN Histogram, this may take a while...");
-            snprintf(path_name, PATH_MAX, "tristan-histo-%d-%2d-%2d-%2d%2d.bin", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
-            dqdk_blk_status_t stats = dqdk_blk_dump(path_name, FILE_BSIZE, TRISTAN_HISTO_SZ, private.histo);
-            if (stats.status != 0)
-                dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
-        }
-
-        memset(path_name, 0, PATH_MAX);
-
-        if (private.bulk && private.head - private.bulk != 0) {
-            dlog_infov("Saving TRISTAN Waveform (Total Bytes=%lu), this may take a while...", private.head - private.bulk);
-            snprintf(path_name, PATH_MAX, "tristan-raw-%d-%2d-%2d-%2d%2d.bin", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
-            dqdk_blk_status_t stats = dqdk_blk_dump(path_name, FILE_BSIZE, private.head - private.bulk, private.bulk);
-            if (stats.status != 0)
-                dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
-        }
-    }
+    tristan_save(&private);
 
     dqdk_waitall(ctx);
     dqdk_dump_stats(ctx);
 
 cleanup:
-    if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB
-        && dqdk_controller_closed(controller) < 0)
-        dlog_error("Error sending closed status");
-
-    if (private.bulk != NULL)
-        dqdk_free(ctx, private.bulk, private.max_bulk_size);
-
-    if (private.histo != NULL)
-        dqdk_free(ctx, (u8*)private.histo, TRISTAN_HISTO_SZ);
+    tristan_fini(ctx, controller, &private, opt_duration);
 
     return dqdk_ctx_fini(ctx);
 }

@@ -141,10 +141,13 @@ int dqdk_stats_dump(dqdk_ctx_t* ctx);
 int dqdk_start(dqdk_ctx_t* ctx);
 int dqdk_waitall(dqdk_ctx_t* ctx);
 int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* noshared_private);
+dqdk_stats_t* dqdk_worker_stats(dqdk_ctx_t* ctx, u32 worker_index);
 int dqdk_ctx_fini(dqdk_ctx_t*);
 void dqdk_dump_stats(dqdk_ctx_t* ctx);
 u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz);
 u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags);
 int dqdk_free(dqdk_ctx_t* ctx, u8* mem, u64 size);
+int dqdk_uses_hugepages(dqdk_ctx_t* ctx);
+u32 dqdk_workers_count(dqdk_ctx_t* ctx);
 
 #endif

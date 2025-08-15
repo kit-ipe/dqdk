@@ -180,7 +180,7 @@ int dqdk_controller_wait(dqdk_controller_t* controller, dqdk_ctx_t* ctx)
     return 0;
 }
 
-int dqdk_controller_report_status(dqdk_controller_t* controller, dqdk_status_t status)
+int dqdk_controller_report_status(dqdk_controller_t* controller, dqdk_status_t status, char* payload)
 {
     if (controller == NULL)
         return -EINVAL;
@@ -191,14 +191,22 @@ int dqdk_controller_report_status(dqdk_controller_t* controller, dqdk_status_t s
         dlog_error2("send", sent);
         return -errno;
     }
-
     dlog_infov("DQDK status changed to %s!", status_string);
+
+    if (payload != NULL && strlen(payload) != 0) {
+        sent = send(controller->clientfd, payload, strlen(payload), 0);
+        if (sent <= 0) {
+            dlog_error2("send", sent);
+            return -errno;
+        }
+    }
+
     return 0;
 }
 
-int dqdk_controller_closed(dqdk_controller_t* controller)
+int dqdk_controller_closed(dqdk_controller_t* controller, char* buffer)
 {
-    int ret = dqdk_controller_report_status(controller, DQDK_STATUS_CLOSED);
+    int ret = dqdk_controller_report_status(controller, DQDK_STATUS_CLOSED, buffer);
     if (controller)
         dqdk_controller_free(controller);
     return ret;
@@ -206,7 +214,7 @@ int dqdk_controller_closed(dqdk_controller_t* controller)
 
 int dqdk_controller_error(dqdk_controller_t* controller)
 {
-    int ret = dqdk_controller_report_status(controller, DQDK_STATUS_ERROR);
+    int ret = dqdk_controller_report_status(controller, DQDK_STATUS_ERROR, NULL);
     if (controller)
         dqdk_controller_free(controller);
     return ret;

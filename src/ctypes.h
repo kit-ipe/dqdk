@@ -11,8 +11,9 @@ typedef __s16 s16;
 typedef __s32 s32;
 typedef __s64 s64;
 
-#define dqdk_always_inline inline __attribute__((always_inline))
-#define packed __attribute__((packed))
+#define dqdk_always_inline // inline __attribute__((always_inline))
+#define dqdk_packed __attribute__((packed))
+#define dqdk_cache_aligned __attribute__((aligned(64)))
 
 #define dqdk_likely(x) __builtin_expect(!!(x), 1)
 #define dqdk_unlikely(x) __builtin_expect(!!(x), 0)

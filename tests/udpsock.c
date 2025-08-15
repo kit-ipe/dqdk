@@ -20,7 +20,7 @@ struct energy_evt {
     u8 mask;
     u16 trigger_info;
     u64 timestamp : 48;
-} packed;
+} dqdk_packed;
 
 struct waveform {
     u16 id;
@@ -28,12 +28,12 @@ struct waveform {
     u8 subcnt;
     u8 aux_info[3];
     u16 waveform;
-} packed;
+} dqdk_packed;
 
 struct listwave {
     struct energy_evt energy;
     u16 waveform;
-} packed;
+} dqdk_packed;
 
 typedef struct energy_evt energy_evt_t;
 typedef struct waveform waveform_t;

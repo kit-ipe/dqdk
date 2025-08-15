@@ -41,7 +41,7 @@ POWER_EV="power/energy-ram/,power/energy-pkg/,power/energy-psys/"
 
 case "$DEBUG" in
     "profile")
-        CMD="perf stat -e $PERF_EV dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G"
+        CMD="perf record -e $PERF_EV dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G"
         ;;
     
     "power")
