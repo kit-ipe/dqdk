@@ -29,6 +29,14 @@
 #define INT_BUFFER 100
 #define STRING_BUFFER 1024
 
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+#define ntoh24b(x) (((x & 0xff) << 16) | (((x >> 8) & 0xff) << 8) | ((x >> 16) & 0xff))
+#elif __BYTE_ORDER == __BIG_ENDIAN
+#define ntoh24b(x) (x)
+#else
+#error "Unsupported Endianess"
+#endif
+
 char* sys_read_string(const char* path)
 {
     char* buffer = calloc(1, STRING_BUFFER);

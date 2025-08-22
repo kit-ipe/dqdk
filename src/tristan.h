@@ -88,21 +88,12 @@ typedef struct {
     tristan_histo_t* histo;
     u8* bulk;
     u8* head;
-    u64 bulk_size;
     u64 max_bulk_size;
     tristan_mode_t mode;
     tristan_perthread_private_t** perthread_privates;
 } tristan_private_t;
 
 #define TRISTAN_HISTO_SZ (sizeof(tristan_histo_t))
-
-#if __BYTE_ORDER == __LITTLE_ENDIAN
-#define ntoh24b(x) (((x & 0xff) << 16) | (((x >> 8) & 0xff) << 8) | ((x >> 16) & 0xff))
-#elif __BYTE_ORDER == __BIG_ENDIAN
-#define ntoh24b(x) (x)
-#else
-#error "Unsupported Endianess"
-#endif
 
 int tristan_init(dqdk_ctx_t* ctx, tristan_private_t* private, tristan_mode_t mode, u64 bulksz)
 {
@@ -136,12 +127,13 @@ int tristan_init(dqdk_ctx_t* ctx, tristan_private_t* private, tristan_mode_t mod
             private->max_bulk_size = bulksz;
             private->bulk = dqdk_uses_hugepages(ctx) ? dqdk_huge_malloc(ctx, private->max_bulk_size, PAGE_2MB) : dqdk_malloc(ctx, private->max_bulk_size, 0);
             private->head = private->bulk;
-            private->bulk_size = 0;
 
             if (private->bulk == NULL) {
                 dlog_error("Error allocating huge pages memory for TRISTAN memory");
                 return -1;
             }
+
+            dlog_infov("Allocated %llu-Bytes for TRISTAN bulk data!", bulksz);
         }
     }
 
@@ -168,13 +160,17 @@ int tristan_save(tristan_private_t* private)
 
         memset(path_name, 0, PATH_MAX);
 
-        u64 bytes = private->head - private->bulk;
-        if (private->bulk && bytes != 0) {
-            dlog_infov("Saving TRISTAN Waveform (Total Bytes=%llu), this may take a while...", bytes);
-            snprintf(path_name, PATH_MAX, "tristan-raw-%04d-%02d-%02d-%02d%02d.bin", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
-            dqdk_blk_status_t stats = dqdk_blk_dump(path_name, FILE_BSIZE, bytes, private->bulk);
-            if (stats.status != 0)
-                dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
+        if (private->bulk) {
+            u64 bytes = private->head - private->bulk;
+            if (bytes != 0) {
+                dlog_infov("Saving TRISTAN Waveform (Total Bytes=%llu), this may take a while...", bytes);
+                snprintf(path_name, PATH_MAX, "tristan-%s-%04d-%02d-%02d-%02d%02d.bin",
+                    tristan_modes[private->mode], tm.tm_year + 1900, tm.tm_mon + 1,
+                    tm.tm_mday, tm.tm_hour, tm.tm_min);
+                dqdk_blk_status_t stats = dqdk_blk_dump(path_name, FILE_BSIZE, bytes, private->bulk);
+                if (stats.status != 0)
+                    dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
+            }
         }
     }
     return 0;
@@ -199,9 +195,9 @@ int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_private
 
             buffer = calloc(1024, sizeof(char));
             snprintf(buffer, 1024,
-                "{ \"max_event_id\": %llu, \"min_event_id\": %llu, \"total_events\": %llu,\"total_bytes\": %llu, \"total_packets\": %llu, \"dqdk_runtime\": %llu, \"runtime\": %lf }",
+                "{ \"max_event_id\": %llu, \"min_event_id\": %llu, \"total_events\": %llu,\"total_bytes\": %llu, \"total_packets\": %llu, \"dqdk_runtime_ms\": %.2lf, \"runtime_ms\": %.2lf }",
                 stats.max_event_id, stats.min_event_id, stats.total_events,
-                stats.total_bytes, stats.total_packets, stats.dqdk_runtime,
+                stats.total_bytes, stats.total_packets, stats.dqdk_runtime / 1e6,
                 stats.runtime);
         }
 

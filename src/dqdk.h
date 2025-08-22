@@ -49,6 +49,7 @@ typedef struct {
 typedef struct {
     u64 rcvd_frames;
     u64 rcvd_pkts;
+    u64 failing_batches;
     u64 fail_polls;
     u64 timeout_polls;
     u64 rx_empty_polls;
@@ -149,5 +150,8 @@ u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags);
 int dqdk_free(dqdk_ctx_t* ctx, u8* mem, u64 size);
 int dqdk_uses_hugepages(dqdk_ctx_t* ctx);
 u32 dqdk_workers_count(dqdk_ctx_t* ctx);
+char* dqdk_get_status_string(dqdk_status_t status);
+dqdk_status_t dqdk_get_status(dqdk_ctx_t* ctx);
+void dqdk_set_status(dqdk_ctx_t* ctx, dqdk_status_t status);
 
 #endif

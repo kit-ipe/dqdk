@@ -10,7 +10,7 @@ LIB_DIR          = ../xdp-tools/lib
 USER_LIBS       := -lpthread -lnuma -lm -luring
 MAN_PAGE        :=
 SCRIPTSDIR      := /usr/local/sbin
-USER_DEFINES    += -D_GNU_SOURCE -I$(realpath .) -O0 -g
+USER_DEFINES    += -D_GNU_SOURCE -I$(realpath .) -O3 -g
 CFLAGS          += $(USER_DEFINES)
 BPF_CFLAGS      += -I$(realpath .)
 

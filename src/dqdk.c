@@ -355,6 +355,9 @@ static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
     }
 
 exit:
+    if (ret < 0)
+        xsk->stats.failing_batches++;
+
     return ret;
 }
 
@@ -409,6 +412,7 @@ static void stats_dump(dqdk_stats_t* stats, u8 debug)
     printf("    Received Packets:         %llu\n", stats->rcvd_pkts);
     printf("    Invalid L3 Packets:       %llu\n", stats->invalid_ip_pkts);
     printf("    Invalid L4 Packets:       %llu\n", stats->invalid_udp_pkts);
+    printf("    Failing Batches:          %llu\n", stats->failing_batches);
     printf("    L3 Packets per Second:    %.3f\n", AVG_PPS(stats->rcvd_pkts, stats->runtime));
     printf("    Failed Polls:             %llu\n", stats->fail_polls);
     printf("    Timeout Polls:            %llu\n", stats->timeout_polls);
@@ -581,7 +585,7 @@ static void* dqdk_worker(void* ptr)
 
 error:
     dlog_errorv("Worker %d is dead!", xsk->index);
-    atomic_store(&ctx->status, DQDK_STATUS_ERROR);
+    dqdk_set_status(ctx, DQDK_STATUS_ERROR);
     if (!ctx->barrier_init || (ret = pthread_barrier_wait(&ctx->barrier)) > 0)
         dlog_error2("pthread_barrier_wait", ret);
 
@@ -692,7 +696,7 @@ int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* noshared_private)
     if (!ret)
         return 0;
 error:
-    atomic_store(&ctx->status, DQDK_STATUS_ERROR);
+    dqdk_set_status(ctx, DQDK_STATUS_ERROR);
     return ret;
 }
 
@@ -735,14 +739,14 @@ int dqdk_waitall(dqdk_ctx_t* ctx)
     if (!ctx)
         return -1;
 
-    if (atomic_load(&ctx->status) > DQDK_STATUS_NONE) {
+    if (dqdk_get_status(ctx) > DQDK_STATUS_NONE) {
         for (u32 _i = 0; _i < ctx->nbqueues; _i++) {
             worker = ctx->workers[_i];
             if (worker) {
                 pthread_join(worker->thread, &thread_ret_ptr);
                 if (thread_ret_ptr != NULL) {
                     dlog_errorv("Worker %d failed and exited", worker->index);
-                    atomic_store(&ctx->status, DQDK_STATUS_ERROR);
+                    dqdk_set_status(ctx, DQDK_STATUS_ERROR);
                 }
             }
         }
@@ -839,7 +843,8 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     ctx->libbpf_flags = XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD;
     ctx->bind_flags = (ctx->needs_wakeup ? XDP_USE_NEED_WAKEUP : 0) | (xdp_mode == XDP_MODE_SKB ? XDP_COPY : 0);
     ctx->xdp_flags = 0;
-    atomic_store(&ctx->status, DQDK_STATUS_NONE);
+
+    dqdk_set_status(ctx, DQDK_STATUS_NONE);
 
     if (ctx->ifspeed < 0) {
         dlog_error("Error fetching link speed");
@@ -958,7 +963,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
         return NULL;
     }
     ctx->barrier_init = true;
-    atomic_store(&ctx->status, DQDK_STATUS_STARTED);
+    dqdk_set_status(ctx, DQDK_STATUS_STARTED);
 
     return ctx;
 }
@@ -991,11 +996,11 @@ int dqdk_start(dqdk_ctx_t* ctx)
         goto error;
     }
 
-    atomic_store(&ctx->status, DQDK_STATUS_READY);
+    dqdk_set_status(ctx, DQDK_STATUS_READY);
     return ret;
 
 error:
-    atomic_store(&ctx->status, DQDK_STATUS_ERROR);
+    dqdk_set_status(ctx, DQDK_STATUS_ERROR);
     return ret;
 }
 
@@ -1023,7 +1028,7 @@ int dqdk_ctx_fini(dqdk_ctx_t* ctx)
     if (!ctx)
         return -1;
 
-    if (atomic_load(&ctx->status) > DQDK_STATUS_NONE) {
+    if (dqdk_get_status(ctx) > DQDK_STATUS_NONE) {
         FILE* file = NULL;
 
         if (ctx->debug_flags & DQDK_DEBUG_LATENCYDUMP) {
@@ -1053,46 +1058,46 @@ int dqdk_ctx_fini(dqdk_ctx_t* ctx)
 
 void dqdk_dump_stats(dqdk_ctx_t* ctx)
 {
-    dqdk_stats_t* worker_stats;
-    dqdk_stats_t avg_stats;
+    dqdk_stats_t avg;
 
     if (ctx == NULL)
         return;
 
-    memset(&avg_stats, 0, sizeof(avg_stats));
+    memset(&avg, 0, sizeof(avg));
 
     for (u32 i = 0; i < ctx->nbqueues; i++) {
-        worker_stats = dqdk_worker_stats(ctx, i);
+        dqdk_stats_t* wstats = dqdk_worker_stats(ctx, i);
         xsk_stats_dump(ctx->workers[i]);
-        avg_stats.runtime = MAX(avg_stats.runtime, worker_stats->runtime);
-        avg_stats.rcvd_pkts += worker_stats->rcvd_pkts;
-        avg_stats.rcvd_frames += worker_stats->rcvd_frames;
+        avg.runtime = MAX(avg.runtime, wstats->runtime);
+        avg.rcvd_pkts += wstats->rcvd_pkts;
+        avg.rcvd_frames += wstats->rcvd_frames;
+        avg.failing_batches += wstats->failing_batches;
 
-        avg_stats.fail_polls += worker_stats->fail_polls;
-        avg_stats.invalid_ip_pkts += worker_stats->invalid_ip_pkts;
-        avg_stats.invalid_udp_pkts += worker_stats->invalid_udp_pkts;
-        avg_stats.rx_empty_polls += worker_stats->rx_empty_polls;
-        avg_stats.rx_fill_fail_polls += worker_stats->rx_fill_fail_polls;
-        avg_stats.timeout_polls += worker_stats->timeout_polls;
-        avg_stats.rx_successful_fills += worker_stats->rx_successful_fills;
+        avg.fail_polls += wstats->fail_polls;
+        avg.invalid_ip_pkts += wstats->invalid_ip_pkts;
+        avg.invalid_udp_pkts += wstats->invalid_udp_pkts;
+        avg.rx_empty_polls += wstats->rx_empty_polls;
+        avg.rx_fill_fail_polls += wstats->rx_fill_fail_polls;
+        avg.timeout_polls += wstats->timeout_polls;
+        avg.rx_successful_fills += wstats->rx_successful_fills;
 
-        avg_stats.xstats.rx_dropped += worker_stats->xstats.rx_dropped;
-        avg_stats.xstats.rx_invalid_descs += worker_stats->xstats.rx_invalid_descs;
-        avg_stats.xstats.rx_ring_full += worker_stats->xstats.rx_ring_full;
-        avg_stats.xstats.rx_fill_ring_empty_descs += worker_stats->xstats.rx_fill_ring_empty_descs;
+        avg.xstats.rx_dropped += wstats->xstats.rx_dropped;
+        avg.xstats.rx_invalid_descs += wstats->xstats.rx_invalid_descs;
+        avg.xstats.rx_ring_full += wstats->xstats.rx_ring_full;
+        avg.xstats.rx_fill_ring_empty_descs += wstats->xstats.rx_fill_ring_empty_descs;
 
-        avg_stats.queuing_latency.sum += worker_stats->queuing_latency.sum;
-        avg_stats.queuing_latency.min = avg_stats.queuing_latency.min == 0 ? worker_stats->queuing_latency.min : MIN(avg_stats.queuing_latency.min, worker_stats->queuing_latency.min);
-        avg_stats.queuing_latency.max = MAX(avg_stats.queuing_latency.max, worker_stats->queuing_latency.max);
+        avg.queuing_latency.sum += wstats->queuing_latency.sum;
+        avg.queuing_latency.min = avg.queuing_latency.min == 0 ? wstats->queuing_latency.min : MIN(avg.queuing_latency.min, wstats->queuing_latency.min);
+        avg.queuing_latency.max = MAX(avg.queuing_latency.max, wstats->queuing_latency.max);
 
-        avg_stats.processing_latency.sum += worker_stats->processing_latency.sum;
-        avg_stats.processing_latency.min = avg_stats.processing_latency.min == 0 ? worker_stats->processing_latency.min : MIN(avg_stats.processing_latency.min, worker_stats->processing_latency.min);
-        avg_stats.processing_latency.max = MAX(avg_stats.processing_latency.max, worker_stats->processing_latency.max);
+        avg.processing_latency.sum += wstats->processing_latency.sum;
+        avg.processing_latency.min = avg.processing_latency.min == 0 ? wstats->processing_latency.min : MIN(avg.processing_latency.min, wstats->processing_latency.min);
+        avg.processing_latency.max = MAX(avg.processing_latency.max, wstats->processing_latency.max);
     }
 
     if (ctx->nbqueues != 1) {
         printf("Average Stats:\n");
-        stats_dump(&avg_stats, ctx->debug_flags & DQDK_DEBUG);
+        stats_dump(&avg, ctx->debug_flags & DQDK_DEBUG);
     }
 }
 
@@ -1184,6 +1189,22 @@ u32 dqdk_workers_count(dqdk_ctx_t* ctx)
 dqdk_stats_t* dqdk_worker_stats(dqdk_ctx_t* ctx, u32 worker_index)
 {
     return &ctx->workers[worker_index]->stats;
+}
+
+char* dqdk_get_status_string(dqdk_status_t status)
+{
+    char* values[] = { "NONE", "STARTED", "READY", "CLOSED", "ERROR"};
+    return values[status];
+}
+
+dqdk_status_t dqdk_get_status(dqdk_ctx_t* ctx)
+{
+    return atomic_load(&ctx->status);
+}
+
+void dqdk_set_status(dqdk_ctx_t* ctx, dqdk_status_t status)
+{
+    atomic_store(&ctx->status, status);
 }
 
 int main(int argc, char** argv)
@@ -1333,18 +1354,18 @@ int main(int argc, char** argv)
         }
     }
 
-    if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB) {
-        dlog_info("Waiting for Control Software to connect...");
-        controller = dqdk_controller_start();
-        if (controller == NULL)
-            goto cleanup;
-    }
-
     ctx = dqdk_ctx_init(opt_ifname, opt_queues, nbqueues, opt_umem_flags, UMEM_SIZE, opt_batchsize, opt_needs_wakeup, opt_busy_poll, XDP_MODE_NATIVE, nbirqs, opt_samecore, opt_packetsz, opt_debug, opt_hyperthreading, (void*)&private);
 
     if (!ctx) {
         dlog_info("Error Initializing DQDK Context");
         goto cleanup;
+    }
+
+    if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB) {
+        dlog_info("Waiting for Control Software to connect...");
+        controller = dqdk_controller_start(ctx);
+        if (controller == NULL)
+            goto cleanup;
     }
 
     dqdk_for_ports_range(ctx, start_port, end_port);
@@ -1376,7 +1397,7 @@ int main(int argc, char** argv)
     dlog_infov("TRISTAN DAQ in mode %s Started!", tristan_modes[mode]);
 
     if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB) {
-        int ret = dqdk_controller_wait(controller, ctx);
+        int ret = dqdk_controller_wait(controller);
         // FIXME: in case the connection closed we need to run some timer and close after that
         if (ret < 0)
             goto cleanup;
