@@ -12,7 +12,7 @@
 #include "dqdk.h"
 
 #define DQDK_CONTROLLER_MAX_EVENTS 32
-#define SERVER_PORT 8000
+#define SERVER_PORT 9000
 #define SERVER_IP "0.0.0.0"
 #define BUFFER_SIZE 64
 
