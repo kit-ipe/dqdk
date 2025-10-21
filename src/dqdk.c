@@ -412,7 +412,7 @@ static void stats_dump(dqdk_stats_t* stats, u8 debug)
     printf("    Received Packets:         %llu\n", stats->rcvd_pkts);
     printf("    Invalid L3 Packets:       %llu\n", stats->invalid_ip_pkts);
     printf("    Invalid L4 Packets:       %llu\n", stats->invalid_udp_pkts);
-    printf("    Failing Batches:          %llu\n", stats->failing_batches);
+    printf("    Empty Batches:            %llu\n", stats->failing_batches);
     printf("    L3 Packets per Second:    %.3f\n", AVG_PPS(stats->rcvd_pkts, stats->runtime));
     printf("    Failed Polls:             %llu\n", stats->fail_polls);
     printf("    Timeout Polls:            %llu\n", stats->timeout_polls);

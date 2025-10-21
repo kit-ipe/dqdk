@@ -195,7 +195,7 @@ int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_private
 
             buffer = calloc(1024, sizeof(char));
             snprintf(buffer, 1024,
-                "{ \"max_event_id\": %llu, \"min_event_id\": %llu, \"total_events\": %llu,\"total_bytes\": %llu, \"total_packets\": %llu, \"dqdk_runtime_ms\": %.2lf, \"runtime_ms\": %.2lf }",
+                "{ \"max_event_id\": %llu, \"min_event_id\": %llu, \"total_received_events\": %llu,\"total_received_bytes\": %llu, \"total_received_packets\": %llu, \"dqdk_runtime_ms\": %.2lf, \"runtime_ms\": %.2lf }",
                 stats.max_event_id, stats.min_event_id, stats.total_events,
                 stats.total_bytes, stats.total_packets, stats.dqdk_runtime / 1e6,
                 stats.runtime);
