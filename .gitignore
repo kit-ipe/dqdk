@@ -77,3 +77,4 @@ xdpsock*
 *.trashinfo
 *.log
 src/bpf/forwarder.skel.h
+*.bin
