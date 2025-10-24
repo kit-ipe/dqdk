@@ -14,6 +14,9 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <bpf/btf.h>
+#include <linux/if_xdp.h>
+#include <xdp/xsk.h>
+#include <xdp/libxdp.h>
 
 #ifdef __STDC_NO_ATOMICS__
 #error "The used complier or libc do not support atomic numbers"
@@ -24,7 +27,6 @@
 #include "dlog.h"
 #include "ctypes.h"
 #include "dqdk-sys.h"
-#include "dqdk-controller.h"
 
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))

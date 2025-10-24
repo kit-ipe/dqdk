@@ -1103,8 +1103,10 @@ void dqdk_dump_stats(dqdk_ctx_t* ctx)
 
 int dqdk_free(dqdk_ctx_t* ctx, u8* mem, u64 size)
 {
-    (void)ctx;
-    return munmap(mem, size);
+    if (dqdk_uses_hugepages(ctx))
+        return munmap(mem, size);
+    free(mem);
+    return 0;
 }
 
 static u8* dqdk_map(dqdk_ctx_t* ctx, u64 size, int flags, int fd)
@@ -1193,7 +1195,7 @@ dqdk_stats_t* dqdk_worker_stats(dqdk_ctx_t* ctx, u32 worker_index)
 
 char* dqdk_get_status_string(dqdk_status_t status)
 {
-    char* values[] = { "NONE", "STARTED", "READY", "CLOSED", "ERROR"};
+    char* values[] = { "NONE", "STARTED", "READY", "CLOSED", "ERROR" };
     return values[status];
 }
 
@@ -1406,8 +1408,6 @@ int main(int argc, char** argv)
     }
 
     dlog_info("Closing...");
-
-    tristan_save(&private);
 
     dqdk_waitall(ctx);
     dqdk_dump_stats(ctx);

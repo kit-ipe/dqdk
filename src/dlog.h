@@ -2,6 +2,7 @@
 #define DQDK_DLOG_H
 
 #include <stdio.h>
+#include <errno.h>
 
 #define dlogv(format, vargs...) fprintf(stdout, format, vargs)
 #define dlog(format) fprintf(stdout, format)
