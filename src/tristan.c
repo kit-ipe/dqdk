@@ -20,7 +20,7 @@ char* tristan_modes[] = {
     [TRISTAN_MODE_ENERGYHISTO] = "energy-histo",
 };
 
-int tristan_init(dqdk_ctx_t* ctx, tristan_private_t* private, tristan_mode_t mode, u64 bulksz)
+int tristan_init(dqdk_ctx_t* ctx, tristan_private_t* private, tristan_mode_t mode, u64 bulksz, char* basedir)
 {
     private->mode = mode;
     if (mode != TRISTAN_MODE_DROP) {
@@ -35,6 +35,15 @@ int tristan_init(dqdk_ctx_t* ctx, tristan_private_t* private, tristan_mode_t mod
             if (private->perthread_privates[i] == NULL)
                 return -1;
         }
+
+        if (basedir == NULL || strnlen(basedir, PATH_MAX) == 0) {
+            char* cwd = getcwd(private->base_path, PATH_MAX);
+            if (!cwd) {
+                dlog_error2("getcwd", !!cwd);
+            }
+        } else
+            strncpy(private->base_path, basedir, PATH_MAX - 1);
+        dlog_infov("Saving output files (if any) in %s.", private->base_path);
 
         if (mode == TRISTAN_MODE_WAVEFORM
             || mode == TRISTAN_MODE_LISTWAVE
@@ -63,6 +72,7 @@ int tristan_init(dqdk_ctx_t* ctx, tristan_private_t* private, tristan_mode_t mod
                 return -1;
             }
 
+            strncpy(private->histo_private->base_path, private->base_path, PATH_MAX);
             if (dqdk_uses_hugepages(ctx))
                 private->histo_private->histo = (tristan_histo_t*)dqdk_huge_malloc(ctx, TRISTAN_HISTO_SZ, PAGE_2MB);
             else
@@ -101,14 +111,16 @@ int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_private
             }
             stats.runtime = duration;
 
-            buffer = calloc(1024, sizeof(char));
-            snprintf(buffer, 1024,
-                "{ \"total_received_events\": %llu,\"total_received_bytes\": %llu, \"total_received_packets\": %llu, \"dqdk_runtime_ms\": %.2lf, \"runtime_ms\": %.2lf }",
+            buffer = calloc(8192, sizeof(char));
+            snprintf(buffer, 8192,
+                "{ \"total_received_events\": %llu,\"total_received_bytes\": %llu, \"total_received_packets\": %llu, \"dqdk_runtime_ms\": %.2lf, \"runtime_ms\": %.2lf, \"directory\": \"%s\"}",
                 stats.total_events, stats.total_bytes, stats.total_packets,
-                stats.dqdk_runtime / 1e6, stats.runtime);
+                stats.dqdk_runtime / 1e6, stats.runtime, private->base_path);
         }
 
+        dlog_info("Waiting for Async Writer to finish");
         dqdk_async_processor_cancel(private->async_writer);
+        dlog_info("Waiting for Async Histogrammer to finish");
         dqdk_async_processor_cancel(private->async_histogrammer);
 
         if (dqdk_controller_closed(controller, buffer) < 0)
@@ -204,10 +216,12 @@ static void* async_histogrammer(void* arg)
     }
 
     if (histo && histo->histo) {
-        char path_name[PATH_MAX] = { 0 };
+        char path_name[8192] = { 0 };
         struct tm* local = getlocaltime();
         dlog_info("Saving TRISTAN Histogram, this may take a while...");
-        snprintf(path_name, PATH_MAX, "tristan-histo-%04d-%02d-%02d-%02d%02d.bin", local->tm_year + 1900, local->tm_mon + 1, local->tm_mday, local->tm_hour, local->tm_min);
+        snprintf(path_name, sizeof(path_name), "%s/tristan-histo-%04d-%02d-%02d-%02d%02d.bin",
+            histo->base_path, local->tm_year + 1900, local->tm_mon + 1,
+            local->tm_mday, local->tm_hour, local->tm_min);
         dqdk_blk_status_t stats = dqdk_blk_dump(path_name, FILE_BSIZE, TRISTAN_HISTO_SZ, histo->histo);
         if (stats.status != 0)
             dlog_infov("DQDK-BLK Object dumping failed, returned %d\n", stats.status);
@@ -216,30 +230,32 @@ static void* async_histogrammer(void* arg)
     return NULL;
 }
 
-static int write_available_blocks(tristan_private_t* private, int fd, u32 blocksz, u8** writer_head, u64* total_wr)
+static s64 write_available_blocks(tristan_private_t* private, int fd, u32 blocksz, u8** writer_head)
 {
-    int ret = 0;
-    u64 available_bytes = atomic_load_explicit(&private->head, memory_order_relaxed) - *writer_head;
-    while (*total_wr != available_bytes) {
-        int wr_bytes = (available_bytes - *total_wr) >= blocksz ? blocksz : (available_bytes - *total_wr);
+    ssize_t ret = 0;
+    s64 available_bytes = atomic_load_explicit(&private->head, memory_order_relaxed) - *writer_head;
+    s64 total_wr = 0;
+    while (total_wr != available_bytes) {
+        int wr_bytes = (available_bytes - total_wr) >= blocksz ? blocksz : (available_bytes - total_wr);
 
         ret = write(fd, *writer_head, wr_bytes);
         if (ret < 0) {
-            ret = errno;
+            total_wr = -errno;
+            printf("write failed with %d\n", errno);
             break;
         }
 
-        *total_wr += ret;
+        total_wr += ret;
         *writer_head += ret;
     }
 
-    return ret;
+    return total_wr;
 }
 
 static void* async_writer(void* arg)
 {
     u64 total_wr = 0;
-    int ret = 0;
+    s64 ret = 0;
     dqdk_async_processor_t* proc = (dqdk_async_processor_t*)arg;
     tristan_private_t* private = (tristan_private_t*)proc->private;
     u32 blocksz = FILE_BSIZE;
@@ -255,37 +271,41 @@ static void* async_writer(void* arg)
     }
 
     struct tm* tm = getlocaltime();
-    char path[PATH_MAX] = { 0 };
-    snprintf(path, PATH_MAX, "tristan-%s-%04d-%02d-%02d-%02d%02d.bin",
-        tristan_modes[private->mode], tm->tm_year + 1900, tm->tm_mon + 1,
-        tm->tm_mday, tm->tm_hour, tm->tm_min);
+    char path[8192] = { 0 };
+    snprintf(path, sizeof(path), "%s/tristan-%s-%04d-%02d-%02d-%02d%02d.bin",
+        private->base_path, tristan_modes[private->mode], tm->tm_year + 1900,
+        tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min);
 
-    int fd = open(path, O_CREAT | O_WRONLY, 0600);
+    int fd = open(path, O_CREAT | O_WRONLY, 0640);
     if (fd < 0) {
-        ret = errno;
+        ret = -errno;
         goto exit;
     }
 
     u8* writer_head = private->bulk;
     while (!dqdk_async_processor_has_stopped(proc)) {
-        ret = write_available_blocks(private, fd, blocksz, &writer_head, &total_wr);
-        if (ret)
+        ret = write_available_blocks(private, fd, blocksz, &writer_head);
+        if (ret < 0)
             goto exit;
+        else
+            total_wr += ret;
     }
 
-    ret = write_available_blocks(private, fd, blocksz, &writer_head, &total_wr);
-    if (ret)
+    ret = write_available_blocks(private, fd, blocksz, &writer_head);
+    if (ret < 0)
         goto exit;
+    else
+        total_wr += ret;
 
     if (fsync(fd) < 0 || close(fd) < 0)
-        ret = errno;
+        ret = -errno;
 
 exit:
-    if (!total_wr || ret)
+    if (!total_wr || ret < 0)
         remove(path);
 
-    if (ret)
-        dlog_errorv("Error writing blocks for bulk data in async writer=%d", ret);
+    if (ret < 0)
+        dlog_errorv("Error writing blocks for bulk data in async writer=%lld", ret);
     else
         dlog_infov("Saved TRISTAN Waveform (Total Bytes=%llu)", total_wr);
 

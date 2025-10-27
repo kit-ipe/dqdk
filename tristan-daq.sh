@@ -4,6 +4,8 @@ MODE=$2
 PORTS=$3
 DURATION=$4
 DEBUG=$5
+DQDK_BIN=/home/jalal/dqdk/src/dqdk
+BASE_DIR=/mnt/raid0
 
 Q=3
 if [[ "$#" -lt 3 ]]; then
@@ -46,27 +48,27 @@ POWER_EV="power/energy-ram/,power/energy-pkg/,power/energy-psys/"
 
 case "$DEBUG" in
     "profile")
-        CMD="perf record -e $PERF_EV dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G"
+        CMD="perf record -e $PERF_EV $DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR"
         ;;
     
     "power")
-        CMD="perf stat -e $POWER_EV dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G"
+        CMD="perf stat -e $POWER_EV $DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR"
         ;;
 
     "latency")
-        CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D"
+        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -P /mnt/raid0"
         ;;
 
     "latency-profile")
-        CMD="perf stat -e $PERF_EV dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D"
+        CMD="perf stat -e $PERF_EV $DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -P $BASE_DIR"
         ;;
 
     "latency-dump")
-        CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -l"
+        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -l -P $BASE_DIR"
         ;;
 
     "")
-        CMD="dqdk -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G"
+        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR"
         ;;
     *)
         echo "Invalid profile: $DEBUG"

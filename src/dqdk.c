@@ -286,6 +286,8 @@ static dqdk_always_inline int process_frame(dqdk_worker_t* xsk, u8* frame, u32 l
         ret = -1;
         break;
     }
+
+    xsk->stats.rcvd_bytes += datalen;
     return ret;
 }
 
@@ -410,6 +412,7 @@ static void stats_dump(dqdk_stats_t* stats, u8 debug)
     printf("    Total runtime (ns):       %llu\n", stats->runtime);
     printf("    Received Frames:          %llu\n", stats->rcvd_frames);
     printf("    Received Packets:         %llu\n", stats->rcvd_pkts);
+    printf("    Total Processed Bytes:    %llu\n", stats->rcvd_bytes);
     printf("    Invalid L3 Packets:       %llu\n", stats->invalid_ip_pkts);
     printf("    Invalid L4 Packets:       %llu\n", stats->invalid_udp_pkts);
     printf("    Empty Batches:            %llu\n", stats->failing_batches);
@@ -460,6 +463,7 @@ void dqdk_usage(char** argv)
     printf("    -G                           Activate Huge Pages for UMEM allocation\n");
     printf("    -S                           Run IRQ and App on same core\n");
     printf("    -D                           Enable Latency measurements\n");
+    printf("    -P                           Base Directory to Save TRISTAN Files\n");
 }
 
 #define dqdk_update_mask(mask, howmany) (*mask = *mask & (0xffffffffffffffff << (howmany)));
@@ -681,7 +685,6 @@ int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* noshared_private)
 
     ret = pthread_attr_init(xsk->thread_attrs);
     if (ret) {
-
         ret = -1;
         goto error;
     }
@@ -1071,6 +1074,7 @@ void dqdk_dump_stats(dqdk_ctx_t* ctx)
         avg.runtime = MAX(avg.runtime, wstats->runtime);
         avg.rcvd_pkts += wstats->rcvd_pkts;
         avg.rcvd_frames += wstats->rcvd_frames;
+        avg.rcvd_bytes += wstats->rcvd_bytes;
         avg.failing_batches += wstats->failing_batches;
 
         avg.fail_polls += wstats->fail_polls;
@@ -1213,6 +1217,7 @@ int main(int argc, char** argv)
 {
     // options values
     char* opt_ifname = NULL;
+    char basedir[PATH_MAX] = { 0 };
     u32 opt_batchsize = 64, opt_queues[MAX_QUEUES], opt_irqs[MAX_QUEUES];
     double opt_duration = -1;
     u8 opt_needs_wakeup = 0, opt_hyperthreading = 0, opt_samecore = 0,
@@ -1238,7 +1243,7 @@ int main(int argc, char** argv)
     memset(opt_queues, -1, sizeof(u32) * MAX_QUEUES);
     memset(opt_irqs, -1, sizeof(u32) * MAX_QUEUES);
 
-    while ((opt = getopt(argc, argv, "a:b:d:hi:q:ws:lm:A:BDHGS")) != -1) {
+    while ((opt = getopt(argc, argv, "a:b:d:hi:q:ws:lm:A:BDHGSP:")) != -1) {
         switch (opt) {
         case 'h':
             dqdk_usage(argv);
@@ -1349,6 +1354,9 @@ int main(int argc, char** argv)
         case 'l':
             opt_debug |= DQDK_DEBUG_LATENCYDUMP;
             break;
+        case 'P':
+            strncpy(basedir, optarg, PATH_MAX - 1);
+            break;
         default:
             dqdk_usage(argv);
             dlog_error("Invalid Arg\n");
@@ -1383,7 +1391,7 @@ int main(int argc, char** argv)
     }
 
     u64 bulk_size = (u64)ceil(((ctx->ifspeed * 1.0 / 8) * 1024 * 1024) * (opt_duration * 1.0 / 1000));
-    if (tristan_init(ctx, &private, mode, bulk_size) < 0)
+    if (tristan_init(ctx, &private, mode, bulk_size, basedir) < 0)
         goto cleanup;
 
     for (u32 i = 0; i < nbqueues; i++) {

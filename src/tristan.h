@@ -82,6 +82,7 @@ typedef struct {
     u8* bulk;
     u8* head;
     u64 max_bulk_size;
+    char base_path[PATH_MAX];
 } tristan_histogram_private_t;
 
 typedef struct {
@@ -90,6 +91,7 @@ typedef struct {
     u64 max_bulk_size;
     tristan_mode_t mode;
     tristan_perthread_private_t** perthread_privates;
+    char base_path[PATH_MAX];
     dqdk_async_processor_t* async_histogrammer;
     dqdk_async_processor_t* async_writer;
     tristan_histogram_private_t* histo_private;
@@ -97,7 +99,7 @@ typedef struct {
 
 #define TRISTAN_HISTO_SZ (sizeof(tristan_histo_t))
 
-int tristan_init(dqdk_ctx_t* ctx, tristan_private_t* private, tristan_mode_t mode, u64 bulksz);
+int tristan_init(dqdk_ctx_t* ctx, tristan_private_t* private, tristan_mode_t mode, u64 bulksz, char* basedir);
 int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_private_t* private, double duration);
 dqdk_always_inline int tristan_daq_waveform(tristan_private_t* private, dqdk_worker_t* xsk, u8* data, int datalen);
 dqdk_always_inline int tristan_daq_listwave(tristan_private_t* private, dqdk_worker_t* xsk, u8* data, int datalen);

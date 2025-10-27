@@ -51,6 +51,7 @@ typedef struct {
 typedef struct {
     u64 rcvd_frames;
     u64 rcvd_pkts;
+    u64 rcvd_bytes;
     u64 failing_batches;
     u64 fail_polls;
     u64 timeout_polls;
