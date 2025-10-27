@@ -4,7 +4,7 @@ MODE=$2
 PORTS=$3
 DURATION=$4
 DEBUG=$5
-DQDK_BIN=/home/jalal/dqdk/src/dqdk
+DQDK_BIN=dqdk
 BASE_DIR=/mnt/raid0
 
 Q=3
