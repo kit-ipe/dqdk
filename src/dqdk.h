@@ -33,11 +33,6 @@
 #define AVG(x, y) (((y) == 0) ? 0 : ((x) * 1.0 / (y)))
 
 #define MAX_QUEUES 16
-
-#define is_power_of_2(x) ((x != 0) && ((x & (x - 1)) == 0))
-#define popcountl(x) __builtin_popcountl(x)
-#define log2l(x) (31 - __builtin_clz(x))
-
 #define DQDK_MAX_LATENCY_METRICS 10000000
 
 typedef struct {
@@ -126,7 +121,7 @@ typedef struct {
     u8 hyperthreading;
     u8 samecore;
     u8 verbose;
-    int packetsz;
+    u32 payloadsz;
     char* ifname;
     int ifindex;
     int ifspeed;
@@ -139,7 +134,7 @@ typedef struct {
     int huge_allocations;
 } dqdk_ctx_t;
 
-dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u32 packetsz, u8 debug, u8 hyperthreading, void* sharedprivate);
+dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u32 payloadsz, u8 debug, u8 hyperthreading, void* sharedprivate);
 int dqdk_for_ports_range(dqdk_ctx_t* ctx, u16 start, u16 end);
 int dqdk_stats_dump(dqdk_ctx_t* ctx);
 int dqdk_start(dqdk_ctx_t* ctx);

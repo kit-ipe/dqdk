@@ -3,14 +3,15 @@ NIC=$1
 MODE=$2
 PORTS=$3
 DURATION=$4
-DEBUG=$5
-DQDK_BIN=dqdk
+PAYLOADSZ=$5
+PROFILE=$6
+DQDK_BIN=/home/jalal/dqdk/src/dqdk
 BASE_DIR=/mnt/raid0
 
 Q=3
 if [[ "$#" -lt 3 ]]; then
     echo "$0: Incorrect number of parameters!"
-    echo "$0 <NIC> <tristan-mode> <udp-port-range> [duration] [debug]"
+    echo "$0 <NIC> <tristan-mode> <udp-port-range> [duration] [profile]"
     exit
 fi
 
@@ -46,32 +47,36 @@ mlx5-rx-dbg.sh $NIC | tee $(pwd)/ethtool.log &
 PERF_EV="context-switches,cpu-migrations,cycles,mem-loads,mem-stores,ref-cycles,instructions,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses,dTLB-load-misses,dTLB-loads,dTLB-store-misses,dTLB-stores,iTLB-load-misses,branches,branch-instructions,branch-misses,bus-cycles,page-faults,L1-icache-load-misses,L1-dcache-loads,L1-dcache-load-misses"
 POWER_EV="power/energy-ram/,power/energy-pkg/,power/energy-psys/"
 
-case "$DEBUG" in
+case "$PROFILE" in
     "profile")
-        CMD="perf record -e $PERF_EV $DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR"
+        CMD="perf record -e $PERF_EV $DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR -s $PAYLOADSZ"
         ;;
     
     "power")
-        CMD="perf stat -e $POWER_EV $DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR"
+        CMD="perf stat -e $POWER_EV $DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR -s $PAYLOADSZ"
         ;;
 
     "latency")
-        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -P /mnt/raid0"
+        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -P $BASE_DIR -s $PAYLOADSZ"
         ;;
 
     "latency-profile")
-        CMD="perf stat -e $PERF_EV $DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -P $BASE_DIR"
+        CMD="perf stat -e $PERF_EV $DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -P $BASE_DIR -s $PAYLOADSZ"
         ;;
 
     "latency-dump")
-        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -l -P $BASE_DIR"
+        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -l -P $BASE_DIR -s $PAYLOADSZ"
+        ;;
+
+    "strip-wfm")
+        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR -s $PAYLOADSZ -W"
         ;;
 
     "")
-        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR"
+        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR -s $PAYLOADSZ"
         ;;
     *)
-        echo "Invalid profile: $DEBUG"
+        echo "Invalid profile: $PROFILE"
         exit 0
 esac
 

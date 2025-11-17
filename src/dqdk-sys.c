@@ -276,7 +276,7 @@ int dqdk_get_link_speed(const char* iface)
         return -1;
 
     struct ifreq ifr;
-    struct ethtool_cmd edata;
+    struct ethtool_cmd edata = { 0 };
 
     memset(&ifr, 0, sizeof(ifr));
     strncpy(ifr.ifr_name, iface, IFNAMSIZ);

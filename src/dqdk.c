@@ -452,9 +452,9 @@ void dqdk_usage(char** argv)
     printf("    -v                           Verbose\n");
     printf("    -b <size>                    Set batch size. Default: 64\n");
     printf("    -w                           Use XDP need wakeup flag\n");
-    printf("    -s                           Expected Packet Size. Default: 3392\n");
+    printf("    -s                           Expected Payload Size. Default: 3392\n");
     printf("    -l                           Dump latency values as a CSV file. Requires -D\n");
-    printf("    -m <waveform|energy-histo>   Set TRISTAN Mode.\n");
+    printf("    -m <mode>                    Set TRISTAN Mode: waveform|listwave|energy-histo\n");
     printf("    -A <irq1,irq2,...>           Set affinity mapping between application threads and drivers queues\n");
     printf("                                 e.g. q1 to irq1, q2 to irq2,...\n");
     printf("    -B                           Enable NAPI busy-poll\n");
@@ -464,6 +464,7 @@ void dqdk_usage(char** argv)
     printf("    -S                           Run IRQ and App on same core\n");
     printf("    -D                           Enable Latency measurements\n");
     printf("    -P                           Base Directory to Save TRISTAN Files\n");
+    printf("    -W                           Strip Waveform in ListWave Mode\n");
 }
 
 #define dqdk_update_mask(mask, howmany) (*mask = *mask & (0xffffffffffffffff << (howmany)));
@@ -786,7 +787,7 @@ exit:
     return ret;
 }
 
-dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u32 packetsz, u8 debug, u8 hyperthreading, void* sharedprivate)
+dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u32 payloadsz, u8 debug, u8 hyperthreading, void* sharedprivate)
 {
     struct rlimit rlim = { RLIM_INFINITY, RLIM_INFINITY };
     dqdk_ctx_t* ctx = calloc(1, sizeof(dqdk_ctx_t));
@@ -839,7 +840,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     ctx->private = sharedprivate;
     ctx->hyperthreading = hyperthreading;
     ctx->debug_flags = debug;
-    ctx->packetsz = packetsz;
+    ctx->payloadsz = payloadsz;
     ctx->ifspeed = dqdk_get_link_speed(ctx->ifname);
     ctx->umem_flags = umem_flags;
     ctx->umem_size = umem_size;
@@ -1120,6 +1121,7 @@ static u8* dqdk_map(dqdk_ctx_t* ctx, u64 size, int flags, int fd)
 
     if (map == MAP_FAILED) {
         dlog_error2("dqdk_map", (int)(u64)map);
+        dlog_errorv("Cannot allocate memory of size=%llu and flags=0x%08x", size, flags);
         return NULL;
     }
 
@@ -1194,7 +1196,10 @@ u32 dqdk_workers_count(dqdk_ctx_t* ctx)
 
 dqdk_stats_t* dqdk_worker_stats(dqdk_ctx_t* ctx, u32 worker_index)
 {
-    return &ctx->workers[worker_index]->stats;
+    dqdk_worker_t* worker = ctx->workers[worker_index];
+    if (!worker)
+        return NULL;
+    return &worker->stats;
 }
 
 char* dqdk_get_status_string(dqdk_status_t status)
@@ -1221,8 +1226,8 @@ int main(int argc, char** argv)
     u32 opt_batchsize = 64, opt_queues[MAX_QUEUES], opt_irqs[MAX_QUEUES];
     double opt_duration = -1;
     u8 opt_needs_wakeup = 0, opt_hyperthreading = 0, opt_samecore = 0,
-       opt_busy_poll = 0, opt_umem_flags = 0, opt_debug = 0;
-    int opt_packetsz = 3438;
+       opt_busy_poll = 0, opt_umem_flags = 0, opt_debug = 0, opt_stripwfm = 0;
+    u32 opt_payloadsz = 3392;
 
     // program variables
     tristan_mode_t mode = TRISTAN_MODE_WAVEFORM;
@@ -1243,7 +1248,7 @@ int main(int argc, char** argv)
     memset(opt_queues, -1, sizeof(u32) * MAX_QUEUES);
     memset(opt_irqs, -1, sizeof(u32) * MAX_QUEUES);
 
-    while ((opt = getopt(argc, argv, "a:b:d:hi:q:ws:lm:A:BDHGSP:")) != -1) {
+    while ((opt = getopt(argc, argv, "a:b:d:hi:q:ws:lm:A:BDHGSP:W")) != -1) {
         switch (opt) {
         case 'h':
             dqdk_usage(argv);
@@ -1312,7 +1317,7 @@ int main(int argc, char** argv)
             }
             break;
         case 's':
-            opt_packetsz = atoi(optarg);
+            opt_payloadsz = atoi(optarg);
             break;
         case 'b':
             opt_batchsize = atoi(optarg);
@@ -1357,6 +1362,9 @@ int main(int argc, char** argv)
         case 'P':
             strncpy(basedir, optarg, PATH_MAX - 1);
             break;
+        case 'W':
+            opt_stripwfm = 1;
+            break;
         default:
             dqdk_usage(argv);
             dlog_error("Invalid Arg\n");
@@ -1364,10 +1372,17 @@ int main(int argc, char** argv)
         }
     }
 
-    ctx = dqdk_ctx_init(opt_ifname, opt_queues, nbqueues, opt_umem_flags, UMEM_SIZE, opt_batchsize, opt_needs_wakeup, opt_busy_poll, XDP_MODE_NATIVE, nbirqs, opt_samecore, opt_packetsz, opt_debug, opt_hyperthreading, (void*)&private);
+    ctx = dqdk_ctx_init(opt_ifname, opt_queues, nbqueues, opt_umem_flags, UMEM_SIZE,
+        opt_batchsize, opt_needs_wakeup, opt_busy_poll, XDP_MODE_NATIVE, nbirqs,
+        opt_samecore, opt_payloadsz, opt_debug, opt_hyperthreading, (void*)&private);
 
     if (!ctx) {
         dlog_info("Error Initializing DQDK Context");
+        goto cleanup;
+    }
+
+    if (opt_stripwfm && mode != TRISTAN_MODE_LISTWAVE) {
+        dlog_error("Stripping Waveform is only available in ListWave mode");
         goto cleanup;
     }
 
@@ -1384,14 +1399,13 @@ int main(int argc, char** argv)
      * Convert link speed to bytes per second from Mbits per second,
      * Convert duration from milliseconds to seconds
      */
-    if ((mode == TRISTAN_MODE_TLB || mode == TRISTAN_MODE_WAVEFORM || mode == TRISTAN_MODE_LISTWAVE)
-        && opt_duration <= 0) {
-        dlog_error("TRISTAN Modes: waveform and listwave require setting a duration");
+    if (opt_duration <= 0) {
+        dlog_error("Duration is required");
         goto cleanup;
     }
 
     u64 bulk_size = (u64)ceil(((ctx->ifspeed * 1.0 / 8) * 1024 * 1024) * (opt_duration * 1.0 / 1000));
-    if (tristan_init(ctx, &private, mode, bulk_size, basedir) < 0)
+    if (tristan_init(ctx, &private, mode, bulk_size, basedir, opt_stripwfm) < 0)
         goto cleanup;
 
     for (u32 i = 0; i < nbqueues; i++) {

@@ -2,8 +2,10 @@
 #define TRISTAN_H
 
 #include <stdatomic.h>
+
 #include "dqdk.h"
 #include "dqdk-async-processor.h"
+#include "ds/bhisto.h"
 
 #define TRISTAN_FE_PORT 5000
 
@@ -44,11 +46,12 @@ typedef struct listwave tristan_listwave_t;
 
 #define TRISTAN_HISTO_EVT_SZ sizeof(tristan_energy_evt_t)
 
-#define HISTO_BINS (2 << 15) // 2^16 bins
-#define HISTO_COUNT 8 // usually 5 or 6
-#define CHNLS_1TILE 166
+#define HISTOBINS_COUNT (2 << 23) // = 2 ^ 24 values
+#define HISTOBUCKETSZ (2 << 7)
+#define HISTO_COUNT 6
+#define TILECHNLS_COUNT 168
 #define TILES_COUNT 9
-#define CHNLS_COUNT (CHNLS_1TILE * TILES_COUNT)
+#define CHNLS_COUNT (TILECHNLS_COUNT * TILES_COUNT)
 
 typedef enum {
     TRISTAN_MODE_DROP,
@@ -61,7 +64,7 @@ typedef enum {
 extern char* tristan_modes[];
 
 typedef struct {
-    u32 histograms[HISTO_COUNT][HISTO_BINS];
+    bhisto_t* histograms[HISTO_COUNT];
 } chnl_t;
 
 typedef struct {
@@ -82,6 +85,7 @@ typedef struct {
     u8* bulk;
     u8* head;
     u64 max_bulk_size;
+    u32 skip_bytes;
     char base_path[PATH_MAX];
 } tristan_histogram_private_t;
 
@@ -95,14 +99,15 @@ typedef struct {
     dqdk_async_processor_t* async_histogrammer;
     dqdk_async_processor_t* async_writer;
     tristan_histogram_private_t* histo_private;
+    u8 strip_wfm;
 } tristan_private_t;
 
 #define TRISTAN_HISTO_SZ (sizeof(tristan_histo_t))
 
-int tristan_init(dqdk_ctx_t* ctx, tristan_private_t* private, tristan_mode_t mode, u64 bulksz, char* basedir);
+int tristan_init(dqdk_ctx_t* ctx, tristan_private_t* private, tristan_mode_t mode, u64 bulksz, char* basedir, u8 stripwfm);
 int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_private_t* private, double duration);
-dqdk_always_inline int tristan_daq_waveform(tristan_private_t* private, dqdk_worker_t* xsk, u8* data, int datalen);
-dqdk_always_inline int tristan_daq_listwave(tristan_private_t* private, dqdk_worker_t* xsk, u8* data, int datalen);
-dqdk_always_inline int tristan_daq_energyhisto(tristan_private_t* private, dqdk_worker_t* xsk, u8* data, int datalen);
+dqdk_always_inline int tristan_daq_waveform(tristan_private_t* private, dqdk_worker_t* xsk, u8* data, u32 datalen);
+dqdk_always_inline int tristan_daq_listwave(tristan_private_t* private, dqdk_worker_t* xsk, u8* data, u32 datalen);
+dqdk_always_inline int tristan_daq_energyhisto(tristan_private_t* private, dqdk_worker_t* xsk, u8* data, u32 datalen);
 
 #endif

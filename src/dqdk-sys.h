@@ -72,4 +72,8 @@ struct tm* getlocaltime(void);
 #define clock_nsecs_real() clock_nsecs(CLOCK_REALTIME)
 #define clock_nsecs_mono() clock_nsecs(CLOCK_MONOTONIC)
 
+#define is_power_of_2(x) ((x != 0) && ((x & (x - 1)) == 0))
+#define popcountl(x) __builtin_popcountl(x)
+#define log2l(x) (31 - __builtin_clz(x))
+
 #endif
