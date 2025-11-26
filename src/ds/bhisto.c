@@ -89,12 +89,12 @@ int bhisto_iterate(bhisto_t* bhisto, bhisto_iterator_t iterator, void* priv)
         return -EINVAL;
 
     u32 count = bhisto->final_bucketsz == 0 ? bhisto->bucket_count : bhisto->bucket_count - 1;
-    for (size_t iter = 0; iter < count * bhisto->bucketsz; iter++) {
-        int bid = iter / bhisto->bucketsz;
-        int idx = iter % bhisto->bucketsz;
+    for (u32 bid = 0; bid < count; bid++) {
         if (bhisto->buckets[bid]) {
-            if (iterator(bid * bhisto->bucketsz + idx + 1, bhisto->buckets[bid][idx], priv) < 0)
-                return -EFAULT;
+            for (u32 idx = 0; idx < bhisto->bucketsz; idx++) {
+                if (iterator(bid * bhisto->bucketsz + idx + 1, bhisto->buckets[bid][idx], priv) < 0)
+                    return -EFAULT;
+            }
         }
     }
 

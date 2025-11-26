@@ -223,7 +223,7 @@ static int bhist_csv_dump_row(u32 energy, u32 freq, void* priv)
         return 0;
 
     struct csv_dumper_priv* meta = (struct csv_dumper_priv*)priv;
-    return dprintf(meta->fd, "%d,%d,%u,%u\n", meta->channel + 1, meta->histo, energy, freq);
+    return dprintf(meta->fd, "%d,%d,%u,%u\n", meta->channel, meta->histo, energy, freq);
 }
 
 int bhisto_csv_dump(bhisto_t* bhisto, int fd, int channel, int histo)
@@ -247,11 +247,11 @@ static int write_csv_histograms(tristan_histo_t* histo, const char* path)
         return -1;
     }
 
-    for (size_t iter = 0; iter < HISTO_COUNT * CHNLS_COUNT; iter++) {
-        int hidx = iter % HISTO_COUNT;
-        int channel = iter / HISTO_COUNT;
-        if (bhisto_csv_dump(histo->channels[channel].histograms[hidx], fd, channel, hidx) < 0)
-            dlog_errorv("Error writing histogram %d in channel %d", hidx, channel);
+    for (int channel = 0; channel < CHNLS_COUNT; channel++) {
+        for (int hidx = 0; hidx < HISTO_COUNT; hidx++) {
+            if (bhisto_csv_dump(histo->channels[channel].histograms[hidx], fd, channel, hidx) < 0)
+                dlog_errorv("Error writing histogram %d in channel %d", hidx, channel);
+        }
     }
 
     if (fsync(fd) || close(fd)) {

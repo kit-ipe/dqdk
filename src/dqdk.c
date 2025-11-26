@@ -390,6 +390,7 @@ static void signal_handler(int sig)
     case SIGINT:
     case SIGTERM:
     case SIGABRT:
+    case SIGHUP:
     case SIGUSR1:
         break_flag = 1;
         break;
@@ -797,6 +798,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGABRT, signal_handler);
+    signal(SIGHUP, signal_handler);
     signal(SIGUSR1, signal_handler);
 
     if (ifname == NULL || nbqueues == 0) {
