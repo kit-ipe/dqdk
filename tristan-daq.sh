@@ -5,7 +5,7 @@ PORTS=$3
 DURATION=$4
 PAYLOADSZ=$5
 PROFILE=$6
-DQDK_BIN=/home/jalal/dqdk/src/dqdk
+DQDK_BIN=dqdk
 BASE_DIR=/mnt/raid0
 
 Q=3
