@@ -6,6 +6,10 @@
 #include <time.h>
 #include <errno.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <linux/mman.h>
+
+#include "../src/ctypes.h"
 
 #define QUEUE_DEPTH 16
 #define FILE_SIZE (10UL * 1024 * 1024 * 1024)
@@ -22,7 +26,7 @@ int main(int argc, char* argv[])
     if (argc > 1 && !strncmp(argv[1], "sync", 5))
         sync = 1;
 
-    int fd = open("./iouring-dump", O_CREAT | O_WRONLY, 0600);
+    int fd = open("dump", O_CREAT | O_WRONLY | O_DIRECT, 0600);
     if (fd < 0) {
         perror("open");
         goto exit;
@@ -71,26 +75,29 @@ int main(int argc, char* argv[])
         /* Call the clean-up function. */
         io_uring_queue_exit(&ring);
     } else {
+        void* buffer = mmap(NULL, FILE_BSIZE, PROT_READ | PROT_WRITE, MAP_HUGETLB | MAP_HUGE_2MB | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (buffer == MAP_FAILED) {
+            printf("mmap failed\n");
+            goto exit;
+        }
         while (total_wr != FILE_SIZE) {
             int old_blocks = total_blocks;
             for (int i = 0; i < QUEUE_DEPTH; i++) {
-                void* buffer = malloc(FILE_BSIZE);
                 ret = write(fd, buffer, FILE_BSIZE);
                 if (ret < 0) {
                     perror("write");
                     return ret;
                 }
                 total_blocks++;
-                free(buffer);
             }
-
             total_wr += (total_blocks - old_blocks) * FILE_BSIZE;
         }
+        munmap(buffer, FILE_BSIZE);
     }
 
+    time_t t1 = time(NULL);
     fsync(fd);
     close(fd);
-    time_t t1 = time(NULL);
     printf("Total Size=%luB | Total Time=%lu | Total Blocks=%d | Average Throughput=%.3f GB/sec\n",
         FILE_SIZE, t1 - t0, total_blocks, FILE_SIZE / ((t1 - t0) * 1e9));
 exit:

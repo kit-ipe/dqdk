@@ -91,7 +91,7 @@ typedef struct {
 
 typedef struct {
     u8* bulk;
-    u8* head;
+    _Atomic(u8*) head;
     u64 max_bulk_size;
     tristan_mode_t mode;
     tristan_perthread_private_t** perthread_privates;

@@ -9,7 +9,8 @@ static void dqdk_async_proc_free(dqdk_async_processor_t* proc)
     if (!proc)
         return;
 
-    free(proc->threads);
+    if (proc->threads)
+        free(proc->threads);
     free(proc);
 }
 
@@ -19,11 +20,14 @@ dqdk_async_processor_t* dqdk_async_processor_init(u8 nb_threads, void* private, 
     if (!proc)
         goto err;
 
+    if (nb_threads != 1)
+        goto err;
+
     proc->func = func;
     proc->private = private;
     proc->nb_threads = nb_threads;
     proc->threads = (pthread_t*)calloc(nb_threads, sizeof(pthread_t));
-    atomic_store_explicit(&proc->stop_flag, 0, memory_order_relaxed);
+    atomic_init(&proc->stop_flag, 0);
     if (!proc->threads)
         goto err;
 

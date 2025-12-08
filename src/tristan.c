@@ -51,7 +51,7 @@ int tristan_init(dqdk_ctx_t* ctx, tristan_private_t* private, tristan_mode_t mod
             || mode == TRISTAN_MODE_ENERGYHISTO) {
             private->max_bulk_size = bulksz;
             private->bulk = dqdk_uses_hugepages(ctx) ? dqdk_huge_malloc(ctx, private->max_bulk_size, PAGE_2MB) : dqdk_malloc(ctx, private->max_bulk_size, 0);
-            private->head = private->bulk;
+            atomic_init(&private->head, private->bulk);
 
             if (private->bulk == NULL) {
                 dlog_error("Error allocating huge pages memory for TRISTAN memory");

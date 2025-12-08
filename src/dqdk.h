@@ -130,7 +130,7 @@ typedef struct {
     int xmode;
     unsigned long cpu_mask;
     int nbports;
-    dqdk_status_t status;
+    _Atomic dqdk_status_t status;
     int huge_allocations;
 } dqdk_ctx_t;
 

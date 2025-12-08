@@ -23,6 +23,9 @@ static inline void dqdk_prefetch(const volatile void* p)
     asm volatile("prefetcht0 %[p]" : : [p] "m"(*(const volatile char*)p));
 }
 
+#define ispower2(x) ((x != 0) && ((x & (x - 1)) == 0))
+#define lowest_power2(x) ((x) != 0) && ((x) & ((x) - 1))
+
 #define IGN_ARG(x) ((void)(x))
 
 #endif
