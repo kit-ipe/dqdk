@@ -25,6 +25,7 @@ static inline void dqdk_prefetch(const volatile void* p)
 
 #define ispower2(x) ((x != 0) && ((x & (x - 1)) == 0))
 #define lowest_power2(x) ((x) != 0) && ((x) & ((x) - 1))
+#define upper_power2(x) (lowest_power2(x) << 1)
 
 #define IGN_ARG(x) ((void)(x))
 

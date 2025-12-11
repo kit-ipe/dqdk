@@ -3,6 +3,19 @@
 #include <errno.h>
 
 #include "dqdk-async-processor.h"
+#include "ds/cne_ring.h"
+#include "dqdk.h"
+
+struct dqdk_async_processor {
+    u8 nb_threads;
+    void* private;
+    dqdk_async_func_t func;
+    dqdk_async_func_t init_func;
+    dqdk_async_func_t fini_func;
+    pthread_t* threads;
+    atomic_bool stop_flag;
+    dqdk_ctx_t* ctx;
+};
 
 static void dqdk_async_proc_free(dqdk_async_processor_t* proc)
 {
@@ -14,7 +27,13 @@ static void dqdk_async_proc_free(dqdk_async_processor_t* proc)
     free(proc);
 }
 
-dqdk_async_processor_t* dqdk_async_processor_init(u8 nb_threads, void* private, dqdk_async_func_t func)
+static void* _runner(void* arg)
+{
+    dqdk_async_processor_t* proc = (dqdk_async_processor_t*)arg;
+    return proc->func(proc, proc->private);
+}
+
+dqdk_async_processor_t* dqdk_async_processor_init(dqdk_ctx_t* ctx, u8 nb_threads, void* private, dqdk_async_func_t func)
 {
     dqdk_async_processor_t* proc = (dqdk_async_processor_t*)malloc(sizeof(dqdk_async_processor_t));
     if (!proc)
@@ -23,6 +42,7 @@ dqdk_async_processor_t* dqdk_async_processor_init(u8 nb_threads, void* private, 
     if (nb_threads != 1)
         goto err;
 
+    proc->ctx = ctx;
     proc->func = func;
     proc->private = private;
     proc->nb_threads = nb_threads;
@@ -32,9 +52,8 @@ dqdk_async_processor_t* dqdk_async_processor_init(u8 nb_threads, void* private, 
         goto err;
 
     for (size_t i = 0; i < proc->nb_threads; i++)
-        if (pthread_create(&proc->threads[i], NULL, proc->func, proc))
+        if (pthread_create(&proc->threads[i], NULL, _runner, proc))
             goto err;
-
     return proc;
 
 err:
@@ -58,6 +77,30 @@ int dqdk_async_processor_cancel(dqdk_async_processor_t* processor)
 int dqdk_async_processor_has_stopped(dqdk_async_processor_t* processor)
 {
     if (!processor)
-        return 1;
+        return -EINVAL;
     return atomic_load_explicit(&processor->stop_flag, memory_order_relaxed);
+}
+
+int dqdk_async_processor_fetch(dqdk_async_processor_t* processor, u8* buffer, u32 len)
+{
+    if (!processor)
+        return -EINVAL;
+
+    return cne_ring_dequeue_elem(processor->ctx->ring, buffer, len);
+}
+
+int dqdk_async_processor_isempty(dqdk_async_processor_t* processor)
+{
+    if (!processor)
+        return -EINVAL;
+
+    return cne_ring_empty(processor->ctx->ring);
+}
+
+int dqdk_async_processor_numworkers(dqdk_async_processor_t* proc)
+{
+    if (!proc)
+        return -EINVAL;
+
+    return proc->nb_threads;
 }

@@ -2,13 +2,16 @@
 #define DQDK_BHISTO
 
 #include "ctypes.h"
+typedef struct {
+    _Atomic(u32*) bucket_array;
+} bucket_t;
 
 typedef struct {
     u32 bucket_count;
     u32 bucketsz;
     u32 final_bucketsz;
     u32 max_value;
-    u32** buckets;
+    bucket_t* buckets;
 } bhisto_t;
 
 typedef int (*bhisto_iterator_t)(u32 bin, u32 freq, void* priv);

@@ -27,6 +27,7 @@
 #include "dlog.h"
 #include "ctypes.h"
 #include "dqdk-sys.h"
+#include "ds/cne_ring.h"
 
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
@@ -85,13 +86,12 @@ typedef struct {
     struct xsk_ring_cons rx;
     umem_info_t* umem_info;
     dqdk_stats_t stats;
-    void* private;
-    void* dedicated_private;
     cpu_set_t cset;
     u32 batch_size;
     u8 busy_poll;
     u8 debug_flags;
     u64 soft_timestamp;
+    cne_ring_t* ring;
 } dqdk_worker_t;
 
 typedef enum {
@@ -103,7 +103,15 @@ typedef enum {
 } dqdk_status_t;
 
 typedef struct {
-    void* private;
+    u8 needs_wakeup;
+    u8 busypoll;
+    enum xdp_attach_mode xdp_mode;
+    u8 irqworker_samecore;
+    u8 debug;
+    u8 hyperthreading;
+} dqdk_ctx_opt_t;
+
+typedef struct {
     pthread_barrier_t barrier;
     bool barrier_init;
     u32 queues[MAX_QUEUES];
@@ -130,16 +138,19 @@ typedef struct {
     int xmode;
     unsigned long cpu_mask;
     int nbports;
-    _Atomic dqdk_status_t status;
+    _Atomic(dqdk_status_t) status;
     int huge_allocations;
+    cne_ring_t* ring;
+    u8* ring_buffer;
+    u64 ringsz;
 } dqdk_ctx_t;
 
-dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u32 payloadsz, u8 debug, u8 hyperthreading, void* sharedprivate);
+dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u32 payloadsz, u64 ringsz, dqdk_ctx_opt_t* opts);
 int dqdk_for_ports_range(dqdk_ctx_t* ctx, u16 start, u16 end);
 int dqdk_stats_dump(dqdk_ctx_t* ctx);
 int dqdk_start(dqdk_ctx_t* ctx);
 int dqdk_waitall(dqdk_ctx_t* ctx);
-int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* noshared_private);
+int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq);
 dqdk_stats_t* dqdk_worker_stats(dqdk_ctx_t* ctx, u32 worker_index);
 int dqdk_ctx_fini(dqdk_ctx_t*);
 void dqdk_dump_stats(dqdk_ctx_t* ctx);
@@ -151,5 +162,4 @@ u32 dqdk_workers_count(dqdk_ctx_t* ctx);
 char* dqdk_get_status_string(dqdk_status_t status);
 dqdk_status_t dqdk_get_status(dqdk_ctx_t* ctx);
 void dqdk_set_status(dqdk_ctx_t* ctx, dqdk_status_t status);
-
 #endif

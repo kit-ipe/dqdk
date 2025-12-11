@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include <unistd.h>
+#include <stdatomic.h>
 
 #include "ds/bhisto.h"
 
@@ -16,7 +17,7 @@ bhisto_t* bhisto(u32 bucketsnb, u32 max)
     if (finalbucketsz != 0)
         bucketsnb++;
 
-    u32** buckets = (u32**)calloc(bucketsnb, sizeof(u32*));
+    bucket_t* buckets = (bucket_t*)calloc(bucketsnb, sizeof(bucket_t));
     if (!buckets)
         return NULL;
 
@@ -52,22 +53,34 @@ u32* bhisto_get(bhisto_t* bhisto, u32 bin)
         mod = index % bhisto->bucketsz;
     }
 
-    if (!bhisto->buckets[bid])
-        bhisto->buckets[bid] = (u32*)calloc(bhisto->bucketsz, sizeof(u32));
+    u32* expected = atomic_load_explicit(&bhisto->buckets[bid].bucket_array, memory_order_relaxed);
+    u32* allocated = NULL;
+    while (expected == NULL) {
+        if (!allocated) {
+            allocated = (u32*)calloc(bhisto->bucketsz, sizeof(u32));
+            if (!allocated)
+                return NULL;
+        }
 
-    if (!bhisto->buckets[bid])
-        return NULL;
+        if (atomic_compare_exchange_weak_explicit(&bhisto->buckets[bid].bucket_array,
+                &expected, allocated, memory_order_release, memory_order_relaxed))
+            break;
 
-    return &bhisto->buckets[bid][mod];
+        if (expected != NULL)
+            free(allocated);
+    }
+
+    return &bhisto->buckets[bid].bucket_array[mod];
 }
 
 int bhisto_increment(bhisto_t* bhisto, u32 bin)
 {
     u32* freq = bhisto_get(bhisto, bin);
     if (!freq)
-        return -EINVAL;
+        return -EFAULT;
 
-    return ++(*freq);
+    int old = atomic_fetch_add_explicit(freq, 1, memory_order_relaxed);
+    return old + 1;
 }
 
 int bhisto_free(bhisto_t* bhisto)
@@ -76,8 +89,9 @@ int bhisto_free(bhisto_t* bhisto)
         return -EINVAL;
 
     for (size_t i = 0; i < bhisto->bucket_count; i++)
-        if (bhisto->buckets[i])
-            free(bhisto->buckets[i]);
+        if (bhisto->buckets[i].bucket_array)
+            free(bhisto->buckets[i].bucket_array);
+    free(bhisto->buckets);
 
     free(bhisto);
     return 0;
@@ -90,18 +104,18 @@ int bhisto_iterate(bhisto_t* bhisto, bhisto_iterator_t iterator, void* priv)
 
     u32 count = bhisto->final_bucketsz == 0 ? bhisto->bucket_count : bhisto->bucket_count - 1;
     for (u32 bid = 0; bid < count; bid++) {
-        if (bhisto->buckets[bid]) {
+        if (bhisto->buckets[bid].bucket_array) {
             for (u32 idx = 0; idx < bhisto->bucketsz; idx++) {
-                if (iterator(bid * bhisto->bucketsz + idx + 1, bhisto->buckets[bid][idx], priv) < 0)
+                if (iterator(bid * bhisto->bucketsz + idx + 1, bhisto->buckets[bid].bucket_array[idx], priv) < 0)
                     return -EFAULT;
             }
         }
     }
 
     int lastbucket = bhisto->bucket_count - 1;
-    if (bhisto->buckets[lastbucket]) {
+    if (bhisto->buckets[lastbucket].bucket_array) {
         for (size_t j = 0; j < bhisto->final_bucketsz; j++)
-            if (iterator(lastbucket * bhisto->bucketsz + j + 1, bhisto->buckets[lastbucket][j], priv) < 0)
+            if (iterator(lastbucket * bhisto->bucketsz + j + 1, bhisto->buckets[lastbucket].bucket_array[j], priv) < 0)
                 return -EFAULT;
     }
 
