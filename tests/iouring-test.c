@@ -12,8 +12,8 @@
 #include "../src/ctypes.h"
 
 #define QUEUE_DEPTH 16
-#define FILE_SIZE (10UL * 1024 * 1024 * 1024)
-#define FILE_BSIZE (1 * 1024 * 1024)
+#define FILE_SIZE (1UL * 1024 * 1024 * 1024)
+#define FILE_BSIZE (3392)
 #define VECTOR_SIZE QUEUE_DEPTH
 
 int main(int argc, char* argv[])
@@ -26,7 +26,7 @@ int main(int argc, char* argv[])
     if (argc > 1 && !strncmp(argv[1], "sync", 5))
         sync = 1;
 
-    int fd = open("dump", O_CREAT | O_WRONLY | O_DIRECT, 0600);
+    int fd = open("/mnt/raid0/dump", O_CREAT | O_WRONLY, 0600);
     if (fd < 0) {
         perror("open");
         goto exit;
@@ -38,11 +38,11 @@ int main(int argc, char* argv[])
 
         struct io_uring_cqe* cqes[QUEUE_DEPTH] = { 0 };
         struct io_uring_cqe* cqe = NULL;
+        void* buffer = malloc(FILE_BSIZE);
 
         while (total_wr != FILE_SIZE) {
             for (int i = 0; i < QUEUE_DEPTH; i++) {
                 struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
-                void* buffer = malloc(FILE_BSIZE);
                 io_uring_prep_write(sqe, fd, buffer, FILE_BSIZE, total_wr);
                 io_uring_sqe_set_data(sqe, buffer);
             }
@@ -64,14 +64,14 @@ int main(int argc, char* argv[])
                     printf("Async writev failed with result=%d\n", cqes[i]->res);
                     continue;
                 }
-                void* buffer = io_uring_cqe_get_data(cqe);
+                io_uring_cqe_get_data(cqe);
                 io_uring_cqe_seen(&ring, cqe);
-                free(buffer);
-
                 total_blocks++;
             }
             total_wr += (total_blocks - old_blocks) * FILE_BSIZE;
         }
+        free(buffer);
+
         /* Call the clean-up function. */
         io_uring_queue_exit(&ring);
     } else {

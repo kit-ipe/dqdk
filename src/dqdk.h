@@ -28,10 +28,14 @@
 #include "ctypes.h"
 #include "dqdk-sys.h"
 #include "ds/cne_ring.h"
+#include "dqdk-controller.h"
 
-#define MAX(x, y) (((x) > (y)) ? (x) : (y))
-#define MIN(x, y) (((x) < (y)) ? (x) : (y))
-#define AVG(x, y) (((y) == 0) ? 0 : ((x) * 1.0 / (y)))
+#define UMEM_FACTOR 64
+#define UMEM_LEN (XSK_RING_PROD__DEFAULT_NUM_DESCS * UMEM_FACTOR)
+#define FRAME_SIZE XSK_UMEM__DEFAULT_FRAME_SIZE
+#define UMEM_SIZE (UMEM_LEN * FRAME_SIZE)
+#define UMEM_FLAGS_USE_HGPG (1 << 0)
+#define UMEM_FLAGS_UNALIGNED (1 << 1)
 
 #define MAX_QUEUES 16
 #define DQDK_MAX_LATENCY_METRICS 10000000
@@ -94,14 +98,6 @@ typedef struct {
     cne_ring_t* ring;
 } dqdk_worker_t;
 
-typedef enum {
-    DQDK_STATUS_NONE,
-    DQDK_STATUS_STARTED,
-    DQDK_STATUS_READY,
-    DQDK_STATUS_CLOSED,
-    DQDK_STATUS_ERROR,
-} dqdk_status_t;
-
 typedef struct {
     u8 needs_wakeup;
     u8 busypoll;
@@ -138,7 +134,6 @@ typedef struct {
     int xmode;
     unsigned long cpu_mask;
     int nbports;
-    _Atomic(dqdk_status_t) status;
     int huge_allocations;
     cne_ring_t* ring;
     u8* ring_buffer;
@@ -159,7 +154,4 @@ u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags);
 int dqdk_free(dqdk_ctx_t* ctx, u8* mem, u64 size);
 int dqdk_uses_hugepages(dqdk_ctx_t* ctx);
 u32 dqdk_workers_count(dqdk_ctx_t* ctx);
-char* dqdk_get_status_string(dqdk_status_t status);
-dqdk_status_t dqdk_get_status(dqdk_ctx_t* ctx);
-void dqdk_set_status(dqdk_ctx_t* ctx, dqdk_status_t status);
 #endif

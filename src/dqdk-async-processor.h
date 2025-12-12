@@ -15,6 +15,8 @@ dqdk_async_processor_t* dqdk_async_processor_init(dqdk_ctx_t* ctx, u8 nb_threads
 int dqdk_async_processor_cancel(dqdk_async_processor_t* processor);
 int dqdk_async_processor_has_stopped(dqdk_async_processor_t* processor);
 int dqdk_async_processor_fetch(dqdk_async_processor_t* processor, u8* buffer, u32 len);
+u32 dqdk_async_processor_nfetch(dqdk_async_processor_t* processor, u8* buffer, u32 elen, u32 burst);
 int dqdk_async_processor_isempty(dqdk_async_processor_t* processor);
 int dqdk_async_processor_numworkers(dqdk_async_processor_t* proc);
+int dqdk_async_processor_count(dqdk_async_processor_t* proc);
 #endif

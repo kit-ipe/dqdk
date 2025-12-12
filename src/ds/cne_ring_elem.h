@@ -31,45 +31,18 @@ extern "C" {
 #include "ring_private.h"
 
 static __cne_always_inline void
-__cne_ring_enqueue_elems_32(struct cne_ring* r, const uint32_t size, uint32_t idx,
-    const void* obj_table, uint32_t n)
+__cne_ring_enqueue_elems_32(struct cne_ring* r, uint64_t size, uint64_t idx,
+    const void* obj_table, uint64_t n)
 {
-    unsigned int i;
     uint32_t* ring = (uint32_t*)&r[1];
-    const uint32_t* obj = (const uint32_t*)obj_table;
-    if (likely(idx + n < size)) {
-        for (i = 0; i < (n & ~0x7); i += 8, idx += 8) {
-            ring[idx] = obj[i];
-            ring[idx + 1] = obj[i + 1];
-            ring[idx + 2] = obj[i + 2];
-            ring[idx + 3] = obj[i + 3];
-            ring[idx + 4] = obj[i + 4];
-            ring[idx + 5] = obj[i + 5];
-            ring[idx + 6] = obj[i + 6];
-            ring[idx + 7] = obj[i + 7];
-        }
-        switch (n & 0x7) {
-        case 7:
-            ring[idx++] = obj[i++]; /* fallthrough */
-        case 6:
-            ring[idx++] = obj[i++]; /* fallthrough */
-        case 5:
-            ring[idx++] = obj[i++]; /* fallthrough */
-        case 4:
-            ring[idx++] = obj[i++]; /* fallthrough */
-        case 3:
-            ring[idx++] = obj[i++]; /* fallthrough */
-        case 2:
-            ring[idx++] = obj[i++]; /* fallthrough */
-        case 1:
-            ring[idx++] = obj[i++]; /* fallthrough */
-        }
+    uint32_t* obj = (uint32_t*)obj_table;
+    if (likely(idx + n <= size)) {
+        memcpy(&ring[idx], obj, n * sizeof(uint32_t));
     } else {
-        for (i = 0; idx < size; i++, idx++)
-            ring[idx] = obj[i];
-        /* Start at the beginning */
-        for (idx = 0; i < n; i++, idx++)
-            ring[idx] = obj[i];
+        uint64_t first = size - idx;
+        uint64_t rem = n - first;
+        memcpy(&ring[idx], obj, first * sizeof(uint32_t));
+        memcpy(&ring[0], obj + first, rem * sizeof(uint32_t));
     }
 }
 
@@ -120,7 +93,7 @@ __cne_ring_enqueue_elems(struct cne_ring* r, uint32_t prod_head, const void* obj
     if (esize == 8)
         __cne_ring_enqueue_elems_64(r, prod_head, obj_table, num);
     else {
-        uint32_t idx, scale, nr_idx, nr_num, nr_size;
+        uint64_t idx, scale, nr_idx, nr_num, nr_size;
 
         /* Normalize to uint32_t */
         scale = esize / sizeof(uint32_t);
@@ -133,45 +106,18 @@ __cne_ring_enqueue_elems(struct cne_ring* r, uint32_t prod_head, const void* obj
 }
 
 static __cne_always_inline void
-__cne_ring_dequeue_elems_32(struct cne_ring* r, const uint32_t size, uint32_t idx, void* obj_table,
-    uint32_t n)
+__cne_ring_dequeue_elems_32(struct cne_ring* r, const uint64_t size, uint64_t idx, void* obj_table,
+    uint64_t n)
 {
-    unsigned int i;
     uint32_t* ring = (uint32_t*)&r[1];
     uint32_t* obj = (uint32_t*)obj_table;
-    if (likely(idx + n < size)) {
-        for (i = 0; i < (n & ~0x7); i += 8, idx += 8) {
-            obj[i] = ring[idx];
-            obj[i + 1] = ring[idx + 1];
-            obj[i + 2] = ring[idx + 2];
-            obj[i + 3] = ring[idx + 3];
-            obj[i + 4] = ring[idx + 4];
-            obj[i + 5] = ring[idx + 5];
-            obj[i + 6] = ring[idx + 6];
-            obj[i + 7] = ring[idx + 7];
-        }
-        switch (n & 0x7) {
-        case 7:
-            obj[i++] = ring[idx++]; /* fallthrough */
-        case 6:
-            obj[i++] = ring[idx++]; /* fallthrough */
-        case 5:
-            obj[i++] = ring[idx++]; /* fallthrough */
-        case 4:
-            obj[i++] = ring[idx++]; /* fallthrough */
-        case 3:
-            obj[i++] = ring[idx++]; /* fallthrough */
-        case 2:
-            obj[i++] = ring[idx++]; /* fallthrough */
-        case 1:
-            obj[i++] = ring[idx++]; /* fallthrough */
-        }
+    if (likely(idx + n <= size)) {
+        memcpy(obj, &ring[idx], n * sizeof(uint32_t));
     } else {
-        for (i = 0; idx < size; i++, idx++)
-            obj[i] = ring[idx];
-        /* Start at the beginning */
-        for (idx = 0; i < n; i++, idx++)
-            obj[i] = ring[idx];
+        uint64_t first = size - idx;
+        uint64_t rem = n - first;
+        memcpy(obj, &ring[idx], first * sizeof(uint32_t));
+        memcpy(obj + first, &ring[0], rem * sizeof(uint32_t));
     }
 }
 
@@ -221,7 +167,7 @@ __cne_ring_dequeue_elems(struct cne_ring* r, uint32_t cons_head, void* obj_table
     if (esize == 8)
         __cne_ring_dequeue_elems_64(r, cons_head, obj_table, num);
     else {
-        uint32_t idx, scale, nr_idx, nr_num, nr_size;
+        uint64_t idx, scale, nr_idx, nr_num, nr_size;
 
         /* Normalize to uint32_t */
         scale = esize / sizeof(uint32_t);

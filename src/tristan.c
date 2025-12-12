@@ -70,7 +70,6 @@ int bhisto_csv_dump(bhisto_t* bhisto, int fd, int channel, int histo)
 
 int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, u8 strip_wfm)
 {
-    int nbWorkers = 1;
     private->strip_wfm = strip_wfm;
     private->timestamp = getlocaltime();
     private->payloadsz = ctx->payloadsz;
@@ -96,6 +95,9 @@ int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, u8 strip_wf
             dlog_error2("open", private->rawdata_fd);
             return -errno;
         }
+
+        posix_fadvise(private->rawdata_fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+        posix_fadvise(private->rawdata_fd, 0, 0, POSIX_FADV_DONTNEED);
     } else
         private->rawdata_fd = -1;
 
@@ -108,10 +110,11 @@ int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, u8 strip_wf
             dlog_error2("open", private->histo_fd);
             return -errno;
         }
+        posix_fadvise(private->rawdata_fd, 0, 0, POSIX_FADV_DONTNEED);
     } else
         private->histo_fd = -1;
 
-    private->consumer = dqdk_async_processor_init(ctx, nbWorkers, private, async_processor);
+    private->consumer = dqdk_async_processor_init(ctx, 1, private, async_processor);
     if (!private->consumer) {
         dlog_error("Error initializing async consumers");
         return -1;
@@ -146,11 +149,6 @@ int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_t* priv
         stats.total_events, stats.total_bytes, stats.total_packets,
         stats.dqdk_runtime / 1e6, private->base_path);
 
-    if (dqdk_controller_closed(controller, buffer) < 0)
-        dlog_error("Error sending closed status");
-
-    free(buffer);
-
     dlog_info("Saving files...");
     if (private->rawdata_fd > 0) {
         if (fsync(private->rawdata_fd) < 0 || close(private->rawdata_fd) < 0)
@@ -180,6 +178,11 @@ int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_t* priv
             dlog_error("Error while closing histogram file");
     }
 
+    if (dqdk_controller_closed(controller, buffer) < 0)
+        dlog_error("Error sending closed status");
+
+    free(buffer);
+
     return 0;
 }
 
@@ -199,55 +202,326 @@ static int histogram_event(tristan_histo_t* histo, tristan_energy_evt_t* evt)
     return 0;
 }
 
-static dqdk_always_inline int tristan_process(dqdk_async_processor_t* proc, tristan_t* private, u8* buffer)
+static dqdk_always_inline int tristan_process(dqdk_async_processor_t* proc, tristan_t* private, u8* buffer, u32 len, u32 burst)
 {
     // Fetch from ring
-    int ret = dqdk_async_processor_fetch(proc, buffer, private->payloadsz);
-    if (ret)
-        return 0;
+    int ret = 0;
+    burst = dqdk_async_processor_nfetch(proc, buffer, private->payloadsz, burst);
+    if (!burst)
+        return -ENOENT;
 
-    u32 len = private->strip_wfm ? TRISTAN_HISTO_EVT_SZ : private->payloadsz;
+    u32 nbEvents = private->mode == TRISTAN_MODE_ENERGYHISTO ? private->payloadsz / TRISTAN_HISTO_EVT_SZ : 1;
+    for (u32 i = 0; i < burst; i++) {
+        // Compute histogram in listwave, listmode, and energy histogram
+        if (private->histo_fd > 0) {
+            tristan_energy_evt_t* evt = (tristan_energy_evt_t*)buffer;
+            for (u32 e = 0; e < nbEvents; e++)
+                histogram_event(private->histo, &evt[e]);
+        }
+    }
 
-    // Write to binary
     if (private->rawdata_fd >= 0) {
-        ret = write(private->rawdata_fd, buffer, len);
+        ret = write(private->rawdata_fd, buffer, len * burst);
         if (ret < 0) {
             dlog_error2("write", ret);
             return -errno;
         }
     }
 
-    // Compute histogram in listwave, listmode, and energy histogram
-    u32 nbEvents = private->mode == TRISTAN_MODE_ENERGYHISTO ? private->payloadsz / TRISTAN_HISTO_EVT_SZ : 1;
-    if (private->histo_fd > 0) {
-        tristan_energy_evt_t* evt = (tristan_energy_evt_t*)buffer;
-        for (u32 i = 0; i < nbEvents; i++)
-            histogram_event(private->histo, &evt[i]);
-    }
-
-    atomic_fetch_add_explicit(&private->total_bytes, len, memory_order_relaxed);
+    // Write to binary
+    atomic_fetch_add_explicit(&private->total_bytes, len * burst, memory_order_relaxed);
     atomic_fetch_add_explicit(&private->total_events, nbEvents, memory_order_relaxed);
     return 0;
 }
 
 static void* async_processor(dqdk_async_processor_t* proc, void* private)
 {
+#define BLOCKSZ (2 << 20)
+    int ret = 0, burst = 1;
     tristan_t* tristan = (tristan_t*)private;
-    u8* buffer = (u8*)malloc(tristan->payloadsz);
+    u8* buffer = (u8*)malloc(BLOCKSZ * 2 / tristan->payloadsz);
+    u8* buffer_start = buffer;
+    time_t t0 = time(NULL), t1;
+    u64 rate = 0;
+
     if (!buffer)
         return NULL;
 
+    u32 len = tristan->strip_wfm ? TRISTAN_HISTO_EVT_SZ : tristan->payloadsz;
     while (!dqdk_async_processor_has_stopped(proc)) {
-        if (tristan_process(proc, tristan, buffer))
+        ret = tristan_process(proc, tristan, buffer, len, burst);
+        if (ret == -ENOSPC)
+            goto exit;
+
+        if (ret)
             continue;
+
+        rate++;
+        t1 = time(NULL);
+        if (t1 - t0 >= 1) {
+            printf("Processed %llu/%lusec\n", rate, t1 - t0);
+            t0 = t1;
+            rate = 0;
+        }
     }
 
     // Empty ring
     while (!dqdk_async_processor_isempty(proc)) {
-        if (tristan_process(proc, tristan, buffer))
+        ret = tristan_process(proc, tristan, buffer, len, burst);
+        if (ret == -ENOSPC)
+            goto exit;
+
+        if (ret)
             continue;
+
+        rate++;
+        t1 = time(NULL);
+        if (t1 - t0 >= 1) {
+            printf("Processed %llu/%lusec\n", rate, t1 - t0);
+            t0 = t1;
+            rate = 0;
+        }
     }
 
-    free(buffer);
-    return NULL;
+exit:
+    free(buffer_start);
+    return (void*)(long)ret;
+}
+
+void tristan_usage(char* program)
+{
+    printf("Usage: %s -i <interface_name> -q <hardware_queue_id>\n", program);
+    printf("Arguments:\n");
+    printf("    -a <ports-range>             Accept source ports range e.g. 5000-5002 will reject all ports 3 ports 5000, 5001 & 5002,\n");
+    printf("    -i <interface>               Set NIC to work on\n");
+    printf("    -q <qid[-qid]>               Set range of hardware queues to work on e.g. -q 1 or -q 1-3.\n");
+    printf("                                 Specifying multiple queues will launch a thread for each queue except if -p poll\n");
+    printf("    -v                           Verbose\n");
+    printf("    -b <size>                    Set batch size. Default: 64\n");
+    printf("    -w                           Use XDP need wakeup flag\n");
+    printf("    -s                           Expected Payload Size. Default: 3392\n");
+    printf("    -l                           Dump latency values as a CSV file. Requires -D\n");
+    printf("    -m <mode>                    Set TRISTAN Mode: waveform|listwave|energy-histo\n");
+    printf("    -A <irq1,irq2,...>           Set affinity mapping between application threads and drivers queues\n");
+    printf("                                 e.g. q1 to irq1, q2 to irq2,...\n");
+    printf("    -B                           Enable NAPI busy-poll\n");
+    printf("    -H                           Considering Hyper-threading is enabled, this flag will assign affinity\n");
+    printf("                                 of softirq and the app to two logical cores of the same physical core.\n");
+    printf("    -G                           Activate Huge Pages for UMEM allocation\n");
+    printf("    -S                           Run IRQ and App on same core\n");
+    printf("    -D                           Enable Latency measurements\n");
+    printf("    -P                           Base Directory to Save TRISTAN Files\n");
+    printf("    -W                           Strip Waveform in ListWave Mode\n");
+}
+
+int main(int argc, char** argv)
+{
+    // options values
+    char* opt_ifname = NULL;
+    char basedir[PATH_MAX] = { 0 };
+    u32 opt_batchsize = 64, opt_queues[MAX_QUEUES], opt_irqs[MAX_QUEUES];
+    u8 opt_umem_flags = 0, opt_stripwfm = 0;
+    u32 opt_payloadsz = 3392;
+    dqdk_ctx_opt_t opts = {
+        .busypoll = 0,
+        .debug = 0,
+        .hyperthreading = 0,
+        .irqworker_samecore = 0,
+        .needs_wakeup = 0,
+        .xdp_mode = XDP_MODE_NATIVE
+    };
+
+    // program variables
+    tristan_t private = { .mode = TRISTAN_MODE_WAVEFORM };
+    int opt;
+    u32 nbqueues = 0, nbirqs = 0;
+
+    dqdk_ctx_t* ctx = NULL;
+    u16 start_port = 0, end_port = 0;
+    dqdk_controller_t* controller = NULL;
+
+    if (argc == 1) {
+        tristan_usage(argv[0]);
+        return 0;
+    }
+
+    memset(&private, 0, sizeof(private));
+    memset(opt_queues, -1, sizeof(u32) * MAX_QUEUES);
+    memset(opt_irqs, -1, sizeof(u32) * MAX_QUEUES);
+
+    while ((opt = getopt(argc, argv, "a:b:hi:q:ws:lm:A:BDHGSP:W")) != -1) {
+        switch (opt) {
+        case 'h':
+            tristan_usage(argv[0]);
+            return 0;
+        case 'a':
+            char* delimiter = NULL;
+            start_port = strtol(optarg, &delimiter, 10);
+            if (delimiter != optarg) {
+                end_port = strtol(++delimiter, &delimiter, 10);
+            } else {
+                dlog_error("Invalid port range.");
+                exit(EXIT_FAILURE);
+            }
+            break;
+        case 'A':
+            // mapping to queues is 1-to-1 e.g. first irq to first queue...
+            if (strchr(optarg, ',') == NULL) {
+                nbirqs = 1;
+                opt_irqs[0] = atoi(optarg);
+            } else {
+                char *delimiter = NULL, *cursor = optarg;
+                u32 irq = -1;
+                do {
+                    irq = strtol(cursor, &delimiter, 10);
+                    if (errno != 0
+                        || cursor == delimiter
+                        || (delimiter[0] != ',' && delimiter[0] != 0)) {
+                        dlog_error("Invalid IRQ string");
+                        goto cleanup;
+                    }
+
+                    cursor = delimiter + 1;
+                    opt_irqs[nbirqs++] = irq;
+                } while (delimiter[0] != 0);
+            }
+            break;
+        case 'i':
+            opt_ifname = optarg;
+            break;
+        case 'q':
+            if (strchr(optarg, '-') == NULL) {
+                nbqueues = 1;
+                opt_queues[0] = atoi(optarg);
+            } else {
+                char* delimiter = NULL;
+                u32 start = strtol(optarg, &delimiter, 10), end;
+                if (delimiter != optarg) {
+                    end = strtol(++delimiter, &delimiter, 10);
+                } else {
+                    dlog_error("Invalid queue range. Accepted: 1,2,3 or 1");
+                    exit(EXIT_FAILURE);
+                }
+
+                nbqueues = (end - start) + 1;
+                if (nbqueues > MAX_QUEUES) {
+                    dlog_errorv("Too many queues. Maximum is %d", MAX_QUEUES);
+                    exit(EXIT_FAILURE);
+                }
+
+                for (u32 idx = 0; idx < nbqueues; ++idx)
+                    opt_queues[idx] = start + idx;
+            }
+            break;
+        case 's':
+            opt_payloadsz = atoi(optarg);
+            break;
+        case 'b':
+            opt_batchsize = atoi(optarg);
+            break;
+        case 'w':
+            opts.needs_wakeup = 1;
+            break;
+        case 'B':
+            opts.busypoll = 1;
+            break;
+        case 'H':
+            opts.hyperthreading = 1;
+            break;
+        case 'G':
+            opt_umem_flags |= UMEM_FLAGS_USE_HGPG;
+            break;
+        case 'S':
+            opts.irqworker_samecore = 1;
+            break;
+        case 'm':
+            if (strcmp(optarg, tristan_modes[TRISTAN_MODE_ENERGYHISTO]) == 0)
+                private.mode = TRISTAN_MODE_ENERGYHISTO;
+            else if (strcmp(optarg, tristan_modes[TRISTAN_MODE_WAVEFORM]) == 0)
+                private.mode = TRISTAN_MODE_WAVEFORM;
+            else if (strcmp(optarg, tristan_modes[TRISTAN_MODE_LISTWAVE]) == 0)
+                private.mode = TRISTAN_MODE_LISTWAVE;
+            else {
+                dlog_errorv("Unknown TRISTAN mode: %s", optarg);
+                exit(EXIT_FAILURE);
+            }
+            break;
+        case 'D':
+            opts.debug |= DQDK_DEBUG;
+            break;
+        case 'l':
+            opts.debug |= DQDK_DEBUG_LATENCYDUMP;
+            break;
+        case 'P':
+            strncpy(basedir, optarg, PATH_MAX - 1);
+            break;
+        case 'W':
+            opt_stripwfm = 1;
+            break;
+        default:
+            tristan_usage(argv[0]);
+            dlog_error("Invalid Arg\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    dlog_info("Waiting for Control Software to connect...");
+    controller = dqdk_controller_start(CONTROLLER_PORT);
+    if (controller == NULL)
+        goto cleanup;
+
+    dqdk_controller_report_status(controller, DQDK_STATUS_STARTED, NULL);
+
+    ctx = dqdk_ctx_init(opt_ifname, opt_queues, nbqueues, opt_umem_flags, UMEM_SIZE,
+        opt_batchsize, opt_payloadsz, RINGBUFSZ, &opts);
+
+    if (!ctx) {
+        dlog_info("Error Initializing DQDK Context");
+        dqdk_controller_error(controller);
+        goto cleanup;
+    }
+
+    if (opt_stripwfm && private.mode != TRISTAN_MODE_LISTWAVE) {
+        dlog_error("Stripping Waveform is only available in ListWave mode");
+        dqdk_controller_error(controller);
+        goto cleanup;
+    }
+
+    dqdk_for_ports_range(ctx, start_port, end_port);
+
+    if (tristan_init(ctx, &private, basedir, opt_stripwfm) < 0) {
+        dqdk_controller_error(controller);
+        goto cleanup;
+    }
+
+    for (u32 i = 0; i < nbqueues; i++) {
+        if (dqdk_worker_init(ctx, opt_queues[i], opt_irqs[i]) < 0) {
+            dqdk_controller_error(controller);
+            goto cleanup;
+        }
+    }
+
+    if (dqdk_start(ctx) < 0) {
+        dlog_error("Error starting DQDK");
+        dqdk_controller_error(controller);
+        goto cleanup;
+    }
+    dqdk_controller_report_status(controller, DQDK_STATUS_READY, NULL);
+    dlog_infov("TRISTAN DAQ in mode %s Started!", tristan_modes[private.mode]);
+
+    int ret = dqdk_controller_wait(controller);
+    // FIXME: in case the connection closed we need to run some timer and close after that
+    if (ret < 0)
+        goto cleanup;
+
+    dlog_info("Closing...");
+
+    if (dqdk_waitall(ctx) < 0)
+        dqdk_controller_error(controller);
+
+cleanup:
+    tristan_fini(ctx, controller, &private);
+    dqdk_dump_stats(ctx);
+    dqdk_controller_free(controller);
+    return dqdk_ctx_fini(ctx);
 }

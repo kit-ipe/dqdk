@@ -19,7 +19,12 @@ if [ -z $DURATION ]; then
     DURATION=4000
 fi
 
-DQDK_MODE="-m $MODE -d $DURATION"
+if [ -z $PAYLOADSZ ]; then
+    PAYLOADSZ=3392
+    echo "Using default payload size: $PAYLOADSZ"
+fi
+
+DQDK_MODE="-m $MODE"
 
 nic_numa=$(cat /sys/class/net/$NIC/device/numa_node)
 if [[ "$nic_numa" == "-1" ]]; then

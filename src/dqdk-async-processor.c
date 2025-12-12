@@ -89,6 +89,14 @@ int dqdk_async_processor_fetch(dqdk_async_processor_t* processor, u8* buffer, u3
     return cne_ring_dequeue_elem(processor->ctx->ring, buffer, len);
 }
 
+u32 dqdk_async_processor_nfetch(dqdk_async_processor_t* processor, u8* buffer, u32 elen, u32 burst)
+{
+    if (!processor)
+        return -EINVAL;
+
+    return cne_ring_dequeue_burst_elem(processor->ctx->ring, buffer, elen, burst, NULL);
+}
+
 int dqdk_async_processor_isempty(dqdk_async_processor_t* processor)
 {
     if (!processor)
@@ -103,4 +111,12 @@ int dqdk_async_processor_numworkers(dqdk_async_processor_t* proc)
         return -EINVAL;
 
     return proc->nb_threads;
+}
+
+int dqdk_async_processor_count(dqdk_async_processor_t* proc)
+{
+    if (!proc)
+        return -EINVAL;
+
+    return cne_ring_count(proc->ctx->ring);
 }

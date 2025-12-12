@@ -2,12 +2,15 @@
 #define DQDK_CONTROLLER_H
 
 #include "dlog.h"
-#include "dqdk.h"
 
 #define DQDK_CONTROLLER_MAX_EVENTS 32
-#define SERVER_PORT 9000
-#define SERVER_IP "0.0.0.0"
-#define BUFFER_SIZE 64
+
+typedef enum {
+    DQDK_STATUS_STARTED,
+    DQDK_STATUS_READY,
+    DQDK_STATUS_CLOSED,
+    DQDK_STATUS_ERROR,
+} dqdk_status_t;
 
 typedef enum {
     DQDK_CMD_QUERY,
@@ -18,14 +21,16 @@ typedef struct {
     int serverfd;
     int clientfd;
     int epollfd;
-    dqdk_ctx_t* ctx;
+    _Atomic(dqdk_status_t) status;
 } dqdk_controller_t;
 
 int dqdk_controller_free(dqdk_controller_t* controller);
-dqdk_controller_t* dqdk_controller_start(dqdk_ctx_t* ctx);
-int dqdk_controller_report_status(dqdk_controller_t* controller, char* payload);
+dqdk_controller_t* dqdk_controller_start(u16 port);
+int dqdk_controller_report_status(dqdk_controller_t* controller, dqdk_status_t status, char* payload);
 int dqdk_controller_wait(dqdk_controller_t* controller);
 int dqdk_controller_closed(dqdk_controller_t* controller, char* buffer);
 int dqdk_controller_error(dqdk_controller_t* controller);
+dqdk_status_t dqdk_controller_status(dqdk_controller_t* cntrl);
+char* dqdk_controller_status_string(dqdk_status_t status);
 
 #endif

@@ -1,13 +1,26 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/epoll.h>
 
 #include "dlog.h"
-#include "dqdk.h"
+#include "ctypes.h"
 #include "dqdk-controller.h"
+
+#define SERVER_IP "0.0.0.0"
+#define BUFFER_SIZE 64
+
+static int dqdk_set_status(dqdk_controller_t* cntrl, dqdk_status_t status)
+{
+    if (!cntrl)
+        return -EINVAL;
+
+    atomic_store(&cntrl->status, status);
+    return 0;
+}
 
 static char* dqdk_get_cmd_string(dqdk_cmd_t cmd)
 {
@@ -15,10 +28,17 @@ static char* dqdk_get_cmd_string(dqdk_cmd_t cmd)
     return values[cmd];
 }
 
+char* dqdk_controller_status_string(dqdk_status_t status)
+{
+    char* values[] = { "STARTED", "READY", "CLOSED", "ERROR" };
+    return values[status];
+}
+
 int dqdk_controller_free(dqdk_controller_t* controller)
 {
     if (!controller)
-        return -1;
+        return -EINVAL;
+
     if (controller->epollfd > 0) {
         epoll_ctl(controller->epollfd, EPOLL_CTL_DEL, controller->clientfd, NULL);
         close(controller->epollfd);
@@ -34,7 +54,7 @@ int dqdk_controller_free(dqdk_controller_t* controller)
     return 0;
 }
 
-dqdk_controller_t* dqdk_controller_start(dqdk_ctx_t* ctx)
+dqdk_controller_t* dqdk_controller_start(u16 port)
 {
     int opt = 1;
     int ret;
@@ -45,12 +65,7 @@ dqdk_controller_t* dqdk_controller_start(dqdk_ctx_t* ctx)
     controller->serverfd = -1;
     controller->clientfd = -1;
     controller->epollfd = -1;
-    controller->ctx = ctx;
-
-    if (!controller->ctx) {
-        dqdk_controller_free(controller);
-        return NULL;
-    }
+    atomic_init(&controller->status, DQDK_STATUS_STARTED);
 
     controller->serverfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (controller->serverfd < 0) {
@@ -62,7 +77,7 @@ dqdk_controller_t* dqdk_controller_start(dqdk_ctx_t* ctx)
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(SERVER_PORT);
+    server_addr.sin_port = htons(port);
     setsockopt(controller->serverfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     setsockopt(controller->serverfd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt));
 
@@ -111,13 +126,10 @@ dqdk_controller_t* dqdk_controller_start(dqdk_ctx_t* ctx)
     return controller;
 }
 
-int dqdk_controller_report_status(dqdk_controller_t* controller, char* payload)
+static int send_status(dqdk_controller_t* controller, char* payload)
 {
-    if (controller == NULL)
-        return -EINVAL;
-
-    dqdk_status_t status = dqdk_get_status(controller->ctx);
-    char* status_string = dqdk_get_status_string(status);
+    dqdk_status_t status = dqdk_controller_status(controller);
+    char* status_string = dqdk_controller_status_string(status);
 
     char string[64];
     snprintf(string, 64, "%s\n", status_string);
@@ -137,6 +149,14 @@ int dqdk_controller_report_status(dqdk_controller_t* controller, char* payload)
     }
 
     return 0;
+}
+
+int dqdk_controller_report_status(dqdk_controller_t* controller, dqdk_status_t status, char* payload)
+{
+    if (dqdk_set_status(controller, status))
+        return -EINVAL;
+
+    return send_status(controller, payload);
 }
 
 int dqdk_controller_wait(dqdk_controller_t* controller)
@@ -170,7 +190,7 @@ int dqdk_controller_wait(dqdk_controller_t* controller)
 
                     cmd_string = dqdk_get_cmd_string(DQDK_CMD_QUERY);
                     if (!strncmp(buffer, cmd_string, strlen(cmd_string))) {
-                        dqdk_controller_report_status(controller, NULL);
+                        send_status(controller, NULL);
                     } else {
                         dlog_errorv("Ignoring unknown command: %s", buffer);
                     }
@@ -191,18 +211,18 @@ int dqdk_controller_wait(dqdk_controller_t* controller)
 
 int dqdk_controller_closed(dqdk_controller_t* controller, char* buffer)
 {
-    dqdk_set_status(controller->ctx, DQDK_STATUS_CLOSED);
-    int ret = dqdk_controller_report_status(controller, buffer);
-    if (controller)
-        dqdk_controller_free(controller);
-    return ret;
+    return dqdk_controller_report_status(controller, DQDK_STATUS_CLOSED, buffer);
 }
 
 int dqdk_controller_error(dqdk_controller_t* controller)
 {
-    dqdk_set_status(controller->ctx, DQDK_STATUS_ERROR);
-    int ret = dqdk_controller_report_status(controller, NULL);
-    if (controller)
-        dqdk_controller_free(controller);
-    return ret;
+    return dqdk_controller_report_status(controller, DQDK_STATUS_ERROR, NULL);
+}
+
+dqdk_status_t dqdk_controller_status(dqdk_controller_t* controller)
+{
+    if (!controller)
+        return DQDK_STATUS_ERROR;
+
+    return atomic_load(&controller->status);
 }

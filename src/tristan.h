@@ -9,6 +9,8 @@
 #include "ds/cne_ring.h"
 
 #define TRISTAN_FE_PORT 5000
+#define RINGBUFSZ (100ULL * 1024 * 1024 * 1024)
+#define CONTROLLER_PORT 9001
 
 struct energy_evt {
     u16 id;
@@ -85,8 +87,5 @@ typedef struct {
 } tristan_t;
 
 #define TRISTAN_HISTO_SZ (sizeof(tristan_histo_t))
-
-int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, u8 stripwfm);
-int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_t* private);
 
 #endif
