@@ -202,21 +202,59 @@ static int histogram_event(tristan_histo_t* histo, tristan_energy_evt_t* evt)
     return 0;
 }
 
+// static dqdk_always_inline int process_events(tristan_t* private, tristan_energy_evt_t* evt, u32 nbEvents)
+// {
+//     for (u32 e = 0; e < nbEvents; e++)
+//         histogram_event(private->histo, &evt[e]);
+// }
+
+static dqdk_always_inline int process_events_unrolled8(tristan_t* private, tristan_energy_evt_t* evt, u32 nbEvents)
+{
+    u32 e = 0;
+    for (e = 0; e < (nbEvents & ~0x7); e += 8) {
+        histogram_event(private->histo, &evt[e]);
+        histogram_event(private->histo, &evt[e + 1]);
+        histogram_event(private->histo, &evt[e + 2]);
+        histogram_event(private->histo, &evt[e + 3]);
+        histogram_event(private->histo, &evt[e + 4]);
+        histogram_event(private->histo, &evt[e + 5]);
+        histogram_event(private->histo, &evt[e + 6]);
+        histogram_event(private->histo, &evt[e + 7]);
+    }
+    switch (nbEvents & 0x7) {
+    case 7:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    case 6:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    case 5:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    case 4:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    case 3:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    case 2:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    case 1:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    }
+
+    return 0;
+}
+
 static dqdk_always_inline int tristan_process(dqdk_async_processor_t* proc, tristan_t* private, u8* buffer, u32 len, u32 burst)
 {
-    // Fetch from ring
     int ret = 0;
+    // Fetch from ring
     burst = dqdk_async_processor_nfetch(proc, buffer, private->payloadsz, burst);
     if (!burst)
         return -ENOENT;
 
     u32 nbEvents = private->mode == TRISTAN_MODE_ENERGYHISTO ? private->payloadsz / TRISTAN_HISTO_EVT_SZ : 1;
-    for (u32 i = 0; i < burst; i++) {
-        // Compute histogram in listwave, listmode, and energy histogram
-        if (private->histo_fd > 0) {
+    if (private->histo_fd > 0) {
+        for (u32 i = 0; i < burst; i++) {
+            // Compute histogram in listwave, listmode, and energy histogram
             tristan_energy_evt_t* evt = (tristan_energy_evt_t*)buffer;
-            for (u32 e = 0; e < nbEvents; e++)
-                histogram_event(private->histo, &evt[e]);
+            process_events_unrolled8(private, evt, nbEvents);
         }
     }
 
@@ -236,10 +274,9 @@ static dqdk_always_inline int tristan_process(dqdk_async_processor_t* proc, tris
 
 static void* async_processor(dqdk_async_processor_t* proc, void* private)
 {
-#define BLOCKSZ (2 << 20)
     int ret = 0, burst = 1;
     tristan_t* tristan = (tristan_t*)private;
-    u8* buffer = (u8*)malloc(BLOCKSZ * 2 / tristan->payloadsz);
+    u8* buffer = (u8*)calloc(burst, tristan->payloadsz);
     u8* buffer_start = buffer;
     time_t t0 = time(NULL), t1;
     u64 rate = 0;
