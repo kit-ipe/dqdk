@@ -15,6 +15,7 @@ static void* async_processor(dqdk_async_processor_t* proc, void* tristan);
 char* tristan_modes[] = {
     [TRISTAN_MODE_WAVEFORM] = "waveform",
     [TRISTAN_MODE_LISTWAVE] = "listwave",
+    [TRISTAN_MODE_LISTMODE] = "listmode",
     [TRISTAN_MODE_ENERGYHISTO] = "energy-histo",
 };
 
@@ -68,6 +69,35 @@ int bhisto_csv_dump(bhisto_t* bhisto, int fd, int channel, int histo)
     return bhisto_iterate(bhisto, bhist_csv_dump_row, &priv);
 }
 
+static int is_store_raw(tristan_mode_t mode)
+{
+    return mode == TRISTAN_MODE_WAVEFORM
+        || mode == TRISTAN_MODE_LISTWAVE
+        || mode == TRISTAN_MODE_LISTMODE;
+}
+
+static int is_store_histo(tristan_mode_t mode)
+{
+    return mode == TRISTAN_MODE_LISTWAVE
+        || mode == TRISTAN_MODE_LISTMODE
+        || mode == TRISTAN_MODE_ENERGYHISTO;
+}
+
+static dqdk_always_inline u32 get_energy_events_count(tristan_mode_t mode, u32 payloadsz)
+{
+    switch (mode) {
+    case TRISTAN_MODE_LISTMODE:
+    case TRISTAN_MODE_ENERGYHISTO:
+        return payloadsz / TRISTAN_HISTO_EVT_SZ;
+    case TRISTAN_MODE_LISTWAVE:
+    case TRISTAN_MODE_WAVEFORM:
+        return 1;
+    default:
+        return 0;
+    }
+    return 0;
+}
+
 int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, u8 strip_wfm)
 {
     private->strip_wfm = strip_wfm;
@@ -85,9 +115,7 @@ int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, u8 strip_wf
         strncpy(private->base_path, basedir, PATH_MAX - 1);
     dlog_infov("Saving output files (if any) in %s.", private->base_path);
 
-    if (private->mode == TRISTAN_MODE_WAVEFORM
-        || private->mode == TRISTAN_MODE_LISTWAVE
-        || private->mode == TRISTAN_MODE_ENERGYHISTO) {
+    if (is_store_raw(private->mode)) {
         char* path = getrawfilename(private);
         private->rawdata_fd = open(path, O_CREAT | O_WRONLY, 0644);
         free(path);
@@ -101,8 +129,7 @@ int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, u8 strip_wf
     } else
         private->rawdata_fd = -1;
 
-    if (private->mode == TRISTAN_MODE_LISTWAVE
-        || private->mode == TRISTAN_MODE_ENERGYHISTO) {
+    if (is_store_histo(private->mode)) {
         char* path = gethistofilename(private);
         private->histo_fd = open(path, O_CREAT | O_WRONLY, 0644);
         free(path);
@@ -202,12 +229,6 @@ static int histogram_event(tristan_histo_t* histo, tristan_energy_evt_t* evt)
     return 0;
 }
 
-// static dqdk_always_inline int process_events(tristan_t* private, tristan_energy_evt_t* evt, u32 nbEvents)
-// {
-//     for (u32 e = 0; e < nbEvents; e++)
-//         histogram_event(private->histo, &evt[e]);
-// }
-
 static dqdk_always_inline int process_events_unrolled8(tristan_t* private, tristan_energy_evt_t* evt, u32 nbEvents)
 {
     u32 e = 0;
@@ -249,7 +270,7 @@ static dqdk_always_inline int tristan_process(dqdk_async_processor_t* proc, tris
     if (!burst)
         return -ENOENT;
 
-    u32 nbEvents = private->mode == TRISTAN_MODE_ENERGYHISTO ? private->payloadsz / TRISTAN_HISTO_EVT_SZ : 1;
+    u32 nbEvents = get_energy_events_count(private->mode, private->payloadsz);
     if (private->histo_fd > 0) {
         for (u32 i = 0; i < burst; i++) {
             // Compute histogram in listwave, listmode, and energy histogram
@@ -478,6 +499,8 @@ int main(int argc, char** argv)
                 private.mode = TRISTAN_MODE_WAVEFORM;
             else if (strcmp(optarg, tristan_modes[TRISTAN_MODE_LISTWAVE]) == 0)
                 private.mode = TRISTAN_MODE_LISTWAVE;
+            else if (strcmp(optarg, tristan_modes[TRISTAN_MODE_LISTMODE]) == 0)
+                private.mode = TRISTAN_MODE_LISTMODE;
             else {
                 dlog_errorv("Unknown TRISTAN mode: %s", optarg);
                 exit(EXIT_FAILURE);
