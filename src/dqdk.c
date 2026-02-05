@@ -1173,3 +1173,11 @@ dqdk_stats_t* dqdk_worker_stats(dqdk_ctx_t* ctx, u32 worker_index)
         return NULL;
     return &worker->stats;
 }
+
+double dqdk_ring_msec_capacity(dqdk_ctx_t* ctx)
+{
+    if (!ctx)
+        return 0;
+
+    return ctx->ringsz * 1e3 / ctx->ifspeed;
+}

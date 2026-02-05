@@ -154,4 +154,6 @@ u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags);
 int dqdk_free(dqdk_ctx_t* ctx, u8* mem, u64 size);
 int dqdk_uses_hugepages(dqdk_ctx_t* ctx);
 u32 dqdk_workers_count(dqdk_ctx_t* ctx);
+double dqdk_ring_msec_capacity(dqdk_ctx_t* ctx);
+
 #endif
