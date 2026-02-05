@@ -1035,34 +1035,38 @@ void dqdk_dump_stats(dqdk_ctx_t* ctx)
     memset(&avg, 0, sizeof(avg));
 
     for (u32 i = 0; i < ctx->nbqueues; i++) {
+        if (ctx->workers[i])
+            xsk_stats_dump(ctx->workers[i]);
+
         dqdk_stats_t* wstats = dqdk_worker_stats(ctx, i);
-        xsk_stats_dump(ctx->workers[i]);
-        avg.runtime = MAX(avg.runtime, wstats->runtime);
-        avg.rcvd_pkts += wstats->rcvd_pkts;
-        avg.rcvd_frames += wstats->rcvd_frames;
-        avg.rcvd_bytes += wstats->rcvd_bytes;
-        avg.failing_batches += wstats->failing_batches;
+        if (wstats) {
+            avg.runtime = MAX(avg.runtime, wstats->runtime);
+            avg.rcvd_pkts += wstats->rcvd_pkts;
+            avg.rcvd_frames += wstats->rcvd_frames;
+            avg.rcvd_bytes += wstats->rcvd_bytes;
+            avg.failing_batches += wstats->failing_batches;
 
-        avg.fail_polls += wstats->fail_polls;
-        avg.invalid_ip_pkts += wstats->invalid_ip_pkts;
-        avg.invalid_udp_pkts += wstats->invalid_udp_pkts;
-        avg.rx_empty_polls += wstats->rx_empty_polls;
-        avg.rx_fill_fail_polls += wstats->rx_fill_fail_polls;
-        avg.timeout_polls += wstats->timeout_polls;
-        avg.rx_successful_fills += wstats->rx_successful_fills;
+            avg.fail_polls += wstats->fail_polls;
+            avg.invalid_ip_pkts += wstats->invalid_ip_pkts;
+            avg.invalid_udp_pkts += wstats->invalid_udp_pkts;
+            avg.rx_empty_polls += wstats->rx_empty_polls;
+            avg.rx_fill_fail_polls += wstats->rx_fill_fail_polls;
+            avg.timeout_polls += wstats->timeout_polls;
+            avg.rx_successful_fills += wstats->rx_successful_fills;
 
-        avg.xstats.rx_dropped += wstats->xstats.rx_dropped;
-        avg.xstats.rx_invalid_descs += wstats->xstats.rx_invalid_descs;
-        avg.xstats.rx_ring_full += wstats->xstats.rx_ring_full;
-        avg.xstats.rx_fill_ring_empty_descs += wstats->xstats.rx_fill_ring_empty_descs;
+            avg.xstats.rx_dropped += wstats->xstats.rx_dropped;
+            avg.xstats.rx_invalid_descs += wstats->xstats.rx_invalid_descs;
+            avg.xstats.rx_ring_full += wstats->xstats.rx_ring_full;
+            avg.xstats.rx_fill_ring_empty_descs += wstats->xstats.rx_fill_ring_empty_descs;
 
-        avg.queuing_latency.sum += wstats->queuing_latency.sum;
-        avg.queuing_latency.min = avg.queuing_latency.min == 0 ? wstats->queuing_latency.min : MIN(avg.queuing_latency.min, wstats->queuing_latency.min);
-        avg.queuing_latency.max = MAX(avg.queuing_latency.max, wstats->queuing_latency.max);
+            avg.queuing_latency.sum += wstats->queuing_latency.sum;
+            avg.queuing_latency.min = avg.queuing_latency.min == 0 ? wstats->queuing_latency.min : MIN(avg.queuing_latency.min, wstats->queuing_latency.min);
+            avg.queuing_latency.max = MAX(avg.queuing_latency.max, wstats->queuing_latency.max);
 
-        avg.processing_latency.sum += wstats->processing_latency.sum;
-        avg.processing_latency.min = avg.processing_latency.min == 0 ? wstats->processing_latency.min : MIN(avg.processing_latency.min, wstats->processing_latency.min);
-        avg.processing_latency.max = MAX(avg.processing_latency.max, wstats->processing_latency.max);
+            avg.processing_latency.sum += wstats->processing_latency.sum;
+            avg.processing_latency.min = avg.processing_latency.min == 0 ? wstats->processing_latency.min : MIN(avg.processing_latency.min, wstats->processing_latency.min);
+            avg.processing_latency.max = MAX(avg.processing_latency.max, wstats->processing_latency.max);
+        }
     }
 
     if (ctx->nbqueues != 1) {
@@ -1179,5 +1183,5 @@ double dqdk_ring_msec_capacity(dqdk_ctx_t* ctx)
     if (!ctx)
         return 0;
 
-    return ctx->ringsz * 1e3 / ctx->ifspeed;
+    return (ctx->ringsz * 8e3) / (ctx->ifspeed * (1ULL << 20));
 }

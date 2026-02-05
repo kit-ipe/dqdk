@@ -7,6 +7,7 @@ PAYLOADSZ=$5
 PROFILE=$6
 DQDK_BIN=dqdk
 BASE_DIR=/mnt/raid0
+BATCH_SIZE=2048
 
 Q=3
 if [[ "$#" -lt 3 ]]; then
@@ -16,7 +17,7 @@ if [[ "$#" -lt 3 ]]; then
 fi
 
 if [ -z $DURATION ]; then
-    DURATION=4000
+    DURATION=0
 fi
 
 if [ -z $PAYLOADSZ ]; then
@@ -54,31 +55,31 @@ POWER_EV="power/energy-ram/,power/energy-pkg/,power/energy-psys/"
 
 case "$PROFILE" in
     "profile")
-        CMD="perf record -e $PERF_EV $DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR -s $PAYLOADSZ"
+        CMD="perf record -e $PERF_EV $DQDK_BIN -i $NIC -d $DURATION -q $Q_STRING -b $BATCH_SIZE -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR -s $PAYLOADSZ"
         ;;
     
     "power")
-        CMD="perf stat -e $POWER_EV $DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR -s $PAYLOADSZ"
+        CMD="perf stat -e $POWER_EV $DQDK_BIN -i $NIC -d $DURATION -q $Q_STRING -b $BATCH_SIZE -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR -s $PAYLOADSZ"
         ;;
 
     "latency")
-        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -P $BASE_DIR -s $PAYLOADSZ"
+        CMD="$DQDK_BIN -i $NIC -d $DURATION -q $Q_STRING -b $BATCH_SIZE -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -P $BASE_DIR -s $PAYLOADSZ"
         ;;
 
     "latency-profile")
-        CMD="perf stat -e $PERF_EV $DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -P $BASE_DIR -s $PAYLOADSZ"
+        CMD="perf stat -e $PERF_EV $DQDK_BIN -i $NIC -d $DURATION -q $Q_STRING -b $BATCH_SIZE -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -P $BASE_DIR -s $PAYLOADSZ"
         ;;
 
     "latency-dump")
-        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -l -P $BASE_DIR -s $PAYLOADSZ"
+        CMD="$DQDK_BIN -i $NIC -d $DURATION -q $Q_STRING -b $BATCH_SIZE -A $INTR_STRING $DQDK_MODE -a $PORTS -G -D -l -P $BASE_DIR -s $PAYLOADSZ"
         ;;
 
     "strip-wfm")
-        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR -s $PAYLOADSZ -W"
+        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -d $DURATION -b $BATCH_SIZE -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR -s $PAYLOADSZ -W"
         ;;
 
     "")
-        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -b 2048 -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR -s $PAYLOADSZ"
+        CMD="$DQDK_BIN -i $NIC -q $Q_STRING -d $DURATION -b $BATCH_SIZE -A $INTR_STRING $DQDK_MODE -a $PORTS -G -P $BASE_DIR -s $PAYLOADSZ"
         ;;
     *)
         echo "Invalid profile: $PROFILE"
