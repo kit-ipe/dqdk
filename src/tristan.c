@@ -6,9 +6,7 @@
 #include "dqdk-blk.h"
 #include "dqdk-async-processor.h"
 #include "dqdk-sys.h"
-#include "tcpip/udp.h"
 #include "tristan.h"
-#include "ds/cne_ring.h"
 
 static void* async_processor(dqdk_async_processor_t* proc, void* tristan);
 
@@ -69,11 +67,12 @@ int bhisto_csv_dump(bhisto_t* bhisto, int fd, int channel, int histo)
     return bhisto_iterate(bhisto, bhist_csv_dump_row, &priv);
 }
 
-static int is_store_raw(tristan_mode_t mode)
+static int is_store_raw(dqdk_ctx_t* ctx, tristan_mode_t mode, s64 duration)
 {
-    return mode == TRISTAN_MODE_WAVEFORM
-        || mode == TRISTAN_MODE_LISTWAVE
-        || mode == TRISTAN_MODE_LISTMODE;
+    if (mode == TRISTAN_MODE_WAVEFORM)
+        return 1;
+
+    return (mode == TRISTAN_MODE_LISTWAVE || mode == TRISTAN_MODE_LISTMODE) && duration < dqdk_ring_msec_capacity(ctx);
 }
 
 static int is_store_histo(tristan_mode_t mode)
@@ -98,24 +97,31 @@ static dqdk_always_inline u32 get_energy_events_count(tristan_mode_t mode, u32 p
     return 0;
 }
 
-int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, u8 strip_wfm)
+int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, s64 duration, u8 strip_wfm)
 {
     private->strip_wfm = strip_wfm;
     private->timestamp = getlocaltime();
     private->payloadsz = ctx->payloadsz;
+    private->duration = duration;
     atomic_init(&private->total_bytes, 0);
     atomic_init(&private->total_events, 0);
+
+    if (private->mode == TRISTAN_MODE_WAVEFORM && duration >= dqdk_ring_msec_capacity(ctx)) {
+        dlog_errorv("Too long DAQ duration in Waveform. Maximum DAQ capacity is %lf millisecond", dqdk_ring_msec_capacity(ctx));
+        return -1;
+    }
 
     if (basedir == NULL || strnlen(basedir, PATH_MAX) == 0) {
         char* cwd = getcwd(private->base_path, PATH_MAX);
         if (!cwd) {
             dlog_error2("getcwd", !!cwd);
+            return -1;
         }
     } else
         strncpy(private->base_path, basedir, PATH_MAX - 1);
     dlog_infov("Saving output files (if any) in %s.", private->base_path);
 
-    if (is_store_raw(private->mode)) {
+    if (is_store_raw(ctx, private->mode, private->duration)) {
         char* path = getrawfilename(private);
         private->rawdata_fd = open(path, O_CREAT | O_WRONLY, 0644);
         free(path);
@@ -192,14 +198,16 @@ int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_t* priv
             return -1;
         }
 
-        for (int channel = 0; channel < CHNLS_COUNT; channel++) {
-            for (int hidx = 0; hidx < HISTO_COUNT; hidx++) {
-                if (bhisto_csv_dump(private->histo->channels[channel].histograms[hidx], private->histo_fd, channel, hidx) < 0)
-                    dlog_errorv("Error writing histogram %d in channel %d", hidx, channel);
-                bhisto_free(private->histo->channels[channel].histograms[hidx]);
+        if (private->histo) {
+            for (int channel = 0; channel < CHNLS_COUNT; channel++) {
+                for (int hidx = 0; hidx < HISTO_COUNT; hidx++) {
+                    if (bhisto_csv_dump(private->histo->channels[channel].histograms[hidx], private->histo_fd, channel, hidx) < 0)
+                        dlog_errorv("Error writing histogram %d in channel %d", hidx, channel);
+                    bhisto_free(private->histo->channels[channel].histograms[hidx]);
+                }
             }
+            free(private->histo);
         }
-        free(private->histo);
 
         if (fsync(private->histo_fd) || close(private->histo_fd))
             dlog_error("Error while closing histogram file");
@@ -350,7 +358,8 @@ void tristan_usage(char* program)
 {
     printf("Usage: %s -i <interface_name> -q <hardware_queue_id>\n", program);
     printf("Arguments:\n");
-    printf("    -a <ports-range>             Accept source ports range e.g. 5000-5002 will reject all ports 3 ports 5000, 5001 & 5002,\n");
+    printf("    -a <ports-range>             Accept source ports range e.g. 5000-5002 will reject all ports except 3 ports 5000, 5001 & 5002\n");
+    printf("    -d <duration>                DAQ duration\n");
     printf("    -i <interface>               Set NIC to work on\n");
     printf("    -q <qid[-qid]>               Set range of hardware queues to work on e.g. -q 1 or -q 1-3.\n");
     printf("                                 Specifying multiple queues will launch a thread for each queue except if -p poll\n");
@@ -359,7 +368,7 @@ void tristan_usage(char* program)
     printf("    -w                           Use XDP need wakeup flag\n");
     printf("    -s                           Expected Payload Size. Default: 3392\n");
     printf("    -l                           Dump latency values as a CSV file. Requires -D\n");
-    printf("    -m <mode>                    Set TRISTAN Mode: waveform|listwave|energy-histo\n");
+    printf("    -m <mode>                    Set TRISTAN Mode: waveform|listwave|listmode|energy-histo\n");
     printf("    -A <irq1,irq2,...>           Set affinity mapping between application threads and drivers queues\n");
     printf("                                 e.g. q1 to irq1, q2 to irq2,...\n");
     printf("    -B                           Enable NAPI busy-poll\n");
@@ -380,6 +389,7 @@ int main(int argc, char** argv)
     u32 opt_batchsize = 64, opt_queues[MAX_QUEUES], opt_irqs[MAX_QUEUES];
     u8 opt_umem_flags = 0, opt_stripwfm = 0;
     u32 opt_payloadsz = 3392;
+    s64 opt_duration = 0;
     dqdk_ctx_opt_t opts = {
         .busypoll = 0,
         .debug = 0,
@@ -407,7 +417,7 @@ int main(int argc, char** argv)
     memset(opt_queues, -1, sizeof(u32) * MAX_QUEUES);
     memset(opt_irqs, -1, sizeof(u32) * MAX_QUEUES);
 
-    while ((opt = getopt(argc, argv, "a:b:hi:q:ws:lm:A:BDHGSP:W")) != -1) {
+    while ((opt = getopt(argc, argv, "a:b:d:hi:q:ws:lm:A:BDHGSP:W")) != -1) {
         switch (opt) {
         case 'h':
             tristan_usage(argv[0]);
@@ -443,6 +453,9 @@ int main(int argc, char** argv)
                     opt_irqs[nbirqs++] = irq;
                 } while (delimiter[0] != 0);
             }
+            break;
+        case 'd':
+            opt_duration = atoll(optarg);
             break;
         case 'i':
             opt_ifname = optarg;
@@ -530,6 +543,11 @@ int main(int argc, char** argv)
     if (controller == NULL)
         goto cleanup;
 
+    if (opt_duration <= 0) {
+        dlog_error("Invalid DAQ duration: it cannot be zero or negative");
+        goto cleanup;
+    }
+
     dqdk_controller_report_status(controller, DQDK_STATUS_STARTED, NULL);
 
     ctx = dqdk_ctx_init(opt_ifname, opt_queues, nbqueues, opt_umem_flags, UMEM_SIZE,
@@ -549,7 +567,7 @@ int main(int argc, char** argv)
 
     dqdk_for_ports_range(ctx, start_port, end_port);
 
-    if (tristan_init(ctx, &private, basedir, opt_stripwfm) < 0) {
+    if (tristan_init(ctx, &private, basedir, opt_duration, opt_stripwfm) < 0) {
         dqdk_controller_error(controller);
         goto cleanup;
     }

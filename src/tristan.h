@@ -8,9 +8,8 @@
 #include "ds/bhisto.h"
 #include "ds/cne_ring.h"
 
-#define TRISTAN_FE_PORT 5000
 #define RINGBUFSZ (100ULL * 1024 * 1024 * 1024)
-#define CONTROLLER_PORT 9001
+#define CONTROLLER_PORT 9000
 
 struct energy_evt {
     u16 id;
@@ -85,6 +84,7 @@ typedef struct {
     int histo_fd;
     struct tm* timestamp;
     u32 payloadsz;
+    s64 duration;
 } tristan_t;
 
 #define TRISTAN_HISTO_SZ (sizeof(tristan_histo_t))
