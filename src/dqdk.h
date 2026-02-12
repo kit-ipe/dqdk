@@ -29,6 +29,7 @@
 #include "dqdk-sys.h"
 #include "ds/cne_ring.h"
 #include "dqdk-controller.h"
+#include "dqdk-mem.h"
 
 #define UMEM_FACTOR 64
 #define UMEM_LEN (XSK_RING_PROD__DEFAULT_NUM_DESCS * UMEM_FACTOR)
@@ -80,7 +81,10 @@ enum {
     DQDK_DEBUG_LATENCYDUMP = 1 << 1,
 };
 
-typedef struct {
+struct dqdk_worker;
+typedef int (*dqdk_frame_processor_t)(struct dqdk_worker* xsk, u8* frame, u32 len);
+
+typedef struct dqdk_worker {
     pthread_t thread;
     pthread_attr_t* thread_attrs;
     u16 index;
@@ -96,6 +100,8 @@ typedef struct {
     u8 debug_flags;
     u64 soft_timestamp;
     cne_ring_t* ring;
+    void* private;
+    dqdk_frame_processor_t frame_processor;
 } dqdk_worker_t;
 
 typedef struct {
@@ -138,22 +144,23 @@ typedef struct {
     cne_ring_t* ring;
     u8* ring_buffer;
     u64 ringsz;
+    dqdk_frame_processor_t frame_processor;
 } dqdk_ctx_t;
 
-dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u32 payloadsz, u64 ringsz, dqdk_ctx_opt_t* opts);
+dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u32 payloadsz, u64 ringsz, dqdk_frame_processor_t proc, dqdk_ctx_opt_t* opts);
 int dqdk_for_ports_range(dqdk_ctx_t* ctx, u16 start, u16 end);
 int dqdk_stats_dump(dqdk_ctx_t* ctx);
 int dqdk_start(dqdk_ctx_t* ctx);
 int dqdk_waitall(dqdk_ctx_t* ctx);
-int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq);
+int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* private);
 dqdk_stats_t* dqdk_worker_stats(dqdk_ctx_t* ctx, u32 worker_index);
 int dqdk_ctx_fini(dqdk_ctx_t*);
 void dqdk_dump_stats(dqdk_ctx_t* ctx);
-u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz);
-u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags);
-int dqdk_free(dqdk_ctx_t* ctx, u8* mem, u64 size);
 int dqdk_uses_hugepages(dqdk_ctx_t* ctx);
 u32 dqdk_workers_count(dqdk_ctx_t* ctx);
 double dqdk_ring_msec_capacity(dqdk_ctx_t* ctx);
+u64 dqdk_calc_ring_count(u64 ringsz, u32 payloadsz);
+u64 dqdk_calc_ring_size(u32 count, u32 payloadsz);
+double dqdk_calc_ring_msec_capacity(u64 ringsz, int ifspeed);
 
 #endif

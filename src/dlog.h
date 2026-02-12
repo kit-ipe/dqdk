@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <errno.h>
+#include <string.h>
 
 #define dlogv(format, vargs...) fprintf(stdout, format, vargs)
 #define dlog(format) fprintf(stdout, format)

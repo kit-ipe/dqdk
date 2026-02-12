@@ -43,9 +43,10 @@
 #define BPF_F_XDP_DEV_BOUND_ONLY (1U << 6)
 
 #include "bpf/forwarder.skel.h"
-#include "dqdk-sys.h"
 #include "tcpip/ipv4.h"
 #include "tcpip/udp.h"
+#include "dqdk-sys.h"
+#include "dqdk-mem.h"
 #include "dqdk.h"
 
 #define FILLQ_LEN UMEM_LEN
@@ -58,7 +59,7 @@ static umem_info_t* umem_info_create(dqdk_ctx_t* ctx)
     umem_info_t* info = (umem_info_t*)calloc(1, sizeof(umem_info_t));
 
     info->size = ctx->umem_size;
-    info->buffer = ctx->umem_flags & UMEM_FLAGS_USE_HGPG ? dqdk_huge_malloc(ctx, ctx->umem_size, PAGE_2MB) : dqdk_malloc(ctx, ctx->umem_size, 0);
+    info->buffer = ctx->umem_flags & UMEM_FLAGS_USE_HGPG ? dqdk_2mbhuge_malloc(ctx->numa_node, ctx->umem_size) : dqdk_malloc(ctx->umem_size, 0);
     if (info->buffer == NULL) {
         dlog_error2("umem_buffer_create", 0);
         free(info);
@@ -205,15 +206,6 @@ dqdk_always_inline u8* get_udp_payload(dqdk_worker_t* xsk, u8* buffer, u32 len, 
     return (u8*)(udp + 1);
 }
 
-// static dqdk_always_inline u8* prefetch_frame(dqdk_worker_t* xsk, int idx)
-// {
-//     u64 addr = xsk_ring_cons__rx_desc(&xsk->rx, idx)->addr;
-//     u8* frame = xsk_umem__get_data(xsk->umem_info->buffer, addr);
-//     dqdk_prefetch(frame);
-
-//     return frame;
-// }
-
 #define WORKER_LATENCY(worker, param, latency)                                                                                  \
     do {                                                                                                                        \
         (worker)->stats.param.sum += (latency);                                                                                 \
@@ -224,6 +216,17 @@ dqdk_always_inline u8* get_udp_payload(dqdk_worker_t* xsk, u8* buffer, u32 len, 
             && ((worker)->stats.param.raw_idx) < DQDK_MAX_LATENCY_METRICS)                                                      \
             (worker)->stats.param.raw[(worker)->stats.param.raw_idx++] = latency;                                               \
     } while (0)
+
+static int post_async(dqdk_worker_t* xsk, u8* data, u32 datalen)
+{
+    int ret = cne_ring_enqueue_elem(xsk->ring, data, datalen);
+    if (ret < 0) {
+        dlog_error("Ring Buffer is full");
+        return -1;
+    }
+
+    return ret;
+}
 
 static dqdk_always_inline int process_frame(dqdk_worker_t* xsk, u8* frame, u32 len)
 {
@@ -237,17 +240,14 @@ static dqdk_always_inline int process_frame(dqdk_worker_t* xsk, u8* frame, u32 l
         WORKER_LATENCY(xsk, queuing_latency, latency);
     }
 
-    ret = cne_ring_enqueue_elem(xsk->ring, data, datalen);
-    if (ret < 0) {
-        dlog_error("Ring Buffer is full");
-        return -1;
-    }
+    ret = xsk->frame_processor ? xsk->frame_processor(xsk, data, datalen) : post_async(xsk, data, datalen);
+    if (!ret)
+        xsk->stats.rcvd_bytes += datalen;
 
-    xsk->stats.rcvd_bytes += datalen;
     return ret;
 }
 
-static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
+static dqdk_always_inline int fetch_xsk(dqdk_worker_t* xsk)
 {
     int ret = 0;
     umem_info_t* umem = xsk->umem_info;
@@ -319,13 +319,13 @@ exit:
     return ret;
 }
 
-static int run_daq(dqdk_worker_t* xsk)
+static int daq_loop(dqdk_worker_t* xsk)
 {
     u64 t0, t1;
 
     t0 = clock_nsecs_mono();
     while (dqdk_unlikely(!break_flag)) {
-        do_daq(xsk);
+        fetch_xsk(xsk);
     }
     t1 = clock_nsecs_mono();
 
@@ -457,22 +457,6 @@ int dqdk_set_affinity(int ht, int samecore, int irq, unsigned long* cpumask, cpu
     return sched_setaffinity(0, sizeof(cpu_set_t), cpuset);
 }
 
-unsigned long long int dqdk_round_to_power2(unsigned long long int n)
-{
-    if (n == 0)
-        return 1;
-
-    n--;
-    n |= n >> 1;
-    n |= n >> 2;
-    n |= n >> 4;
-    n |= n >> 8;
-    n |= n >> 16;
-    n++;
-
-    return n;
-}
-
 struct worker_obj {
     dqdk_worker_t* xsk;
     dqdk_ctx_t* ctx;
@@ -514,7 +498,7 @@ static void* dqdk_worker(void* ptr)
         goto error;
     }
 
-    ret = run_daq(xsk);
+    ret = daq_loop(xsk);
     if (ret >= 0)
         goto cleanup;
 
@@ -528,7 +512,7 @@ cleanup:
     return (void*)(long)ret;
 }
 
-int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq)
+int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* private)
 {
     static int worker_index = 0;
     int ret;
@@ -550,6 +534,8 @@ int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq)
     wobj->ctx = ctx;
     wobj->xsk = xsk;
 
+    xsk->private = private;
+    xsk->frame_processor = ctx->frame_processor;
     xsk->queue_id = qid;
     xsk->index = worker_index++;
     xsk->ring = ctx->ring;
@@ -654,7 +640,7 @@ static int dqdk_ctx_free(dqdk_ctx_t* ctx)
         cne_ring_free(ctx->ring);
 
     if (ctx->ring_buffer)
-        dqdk_free(ctx, ctx->ring_buffer, ctx->ringsz);
+        dqdk_free(ctx->ring_buffer, ctx->ringsz);
 
     if (ctx->barrier_init)
         pthread_barrier_destroy(&ctx->barrier);
@@ -718,25 +704,7 @@ exit:
     return ret;
 }
 
-static u64 get_powerof2(u64 n)
-{
-    if (n == 0)
-        return 1;
-
-    if (ispower2(n))
-        return n;
-
-    n--;
-    n |= n >> 1;
-    n |= n >> 2;
-    n |= n >> 4;
-    n |= n >> 8;
-    n |= n >> 16;
-    n |= n >> 32;
-    return n + 1;
-}
-
-dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u32 payloadsz, u64 ringsz, dqdk_ctx_opt_t* opts)
+dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u32 payloadsz, u64 ringsz, dqdk_frame_processor_t frame_processor, dqdk_ctx_opt_t* opts)
 {
     struct rlimit rlim = { RLIM_INFINITY, RLIM_INFINITY };
     dqdk_ctx_t* ctx = calloc(1, sizeof(dqdk_ctx_t));
@@ -798,6 +766,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
         ctx->samecore = opts->irqworker_samecore;
     }
 
+    ctx->frame_processor = frame_processor;
     ctx->batch_size = batch_size;
     ctx->nbqueues = nbqueues;
     ctx->payloadsz = payloadsz;
@@ -858,29 +827,36 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
         return NULL;
     }
 
-    u64 count = get_powerof2(ringsz / ctx->payloadsz);
-    ctx->ringsz = cne_ring_get_memsize_elem(ctx->payloadsz, count);
-    dlog_infov("Allocating ring buffer size=%llu for %llu elements", ctx->ringsz, count);
-    if (ctx->umem_flags & UMEM_FLAGS_USE_HGPG) {
-        dlog_info("Huge pages are activated!");
-        ctx->ring_buffer = dqdk_huge_malloc(ctx, ctx->ringsz, PAGE_2MB);
-    } else
-        ctx->ring_buffer = dqdk_malloc(ctx, ctx->ringsz, 0);
+    if (ctx->frame_processor) {
+        ctx->ring = NULL;
+        ctx->ringsz = 0;
+        ctx->ring_buffer = NULL;
+    } else {
+        u64 count = dqdk_calc_ring_count(ringsz, ctx->payloadsz);
+        ctx->ringsz = dqdk_calc_ring_size(count, payloadsz);
+        double time_capacity = dqdk_calc_ring_msec_capacity(ctx->ringsz, ctx->ifspeed);
+        dlog_infov("Allocating ring buffer size=%llu for %llu elements enough for %lf milliseconds", ctx->ringsz, count, time_capacity);
+        if (ctx->umem_flags & UMEM_FLAGS_USE_HGPG) {
+            dlog_info("Huge pages are activated!");
+            ctx->ring_buffer = dqdk_2mbhuge_malloc(ctx->numa_node, ctx->ringsz);
+        } else
+            ctx->ring_buffer = dqdk_malloc(ctx->ringsz, 0);
 
-    if (!ctx->ring_buffer) {
-        dlog_error("Error allocating huge pages memory for ring buffer");
-        dqdk_ctx_free(ctx);
-        return NULL;
-    }
+        if (!ctx->ring_buffer) {
+            dlog_error("Error allocating huge pages memory for ring buffer");
+            dqdk_ctx_free(ctx);
+            return NULL;
+        }
 
-    dlog_info("Initializing ring buffer");
-    ctx->ring = cne_ring_init(ctx->ring_buffer, ctx->ringsz, ctx->payloadsz, count, 0);
-    if (!ctx->ring) {
-        dlog_error2("cne_ring_init", -1);
-        dqdk_ctx_free(ctx);
-        return NULL;
+        dlog_info("Initializing ring buffer");
+        ctx->ring = cne_ring_init(ctx->ring_buffer, ctx->ringsz, ctx->payloadsz, count, 0);
+        if (!ctx->ring) {
+            dlog_error2("cne_ring_init", -1);
+            dqdk_ctx_free(ctx);
+            return NULL;
+        }
+        dlog_info("Finished initializing ring buffer");
     }
-    dlog_info("Finished initializing ring buffer");
 
     if (!ctx->samecore && nbqueues * 2 > nprocs) {
         dlog_errorv("IRQs and Application threads are running on different cores. You should have enough dedicated cores for both of them. The maximum possible cores now is %d", nprocs);
@@ -1075,84 +1051,6 @@ void dqdk_dump_stats(dqdk_ctx_t* ctx)
     }
 }
 
-int dqdk_free(dqdk_ctx_t* ctx, u8* mem, u64 size)
-{
-    if (dqdk_uses_hugepages(ctx))
-        return munmap(mem, size);
-    free(mem);
-    return 0;
-}
-
-static u8* dqdk_map(dqdk_ctx_t* ctx, u64 size, int flags, int fd)
-{
-    (void)ctx;
-    void* map = mmap(NULL, size, PROT_READ | PROT_WRITE, flags, fd, 0);
-
-    if (map == MAP_FAILED) {
-        dlog_error2("dqdk_map", (int)(u64)map);
-        dlog_errorv("Cannot allocate memory of size=%llu and flags=0x%08x", size, flags);
-        return NULL;
-    }
-
-    if (mlock(map, size) < 0) {
-        dqdk_free(ctx, map, size);
-        map = NULL;
-    }
-
-    return (u8*)map;
-}
-
-u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags)
-{
-    return dqdk_map(ctx, size, MAP_PRIVATE | MAP_ANONYMOUS | flags, -1);
-}
-
-u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz)
-{
-    int additional_pages = 0, needed_hgpg = 0;
-
-    switch (pagesz) {
-    case PAGE_2MB:
-        additional_pages = HUGETLB_CALC_2MB(size);
-        break;
-    case PAGE_1GB:
-        additional_pages = HUGETLB_CALC_1GB(size);
-        break;
-
-    case PAGE_4KB:
-    default:
-        return NULL;
-    }
-
-    // struct stat st;
-    // if (stat(HUGETLBFS_PATH, &st) == 0 && S_ISDIR(st.st_mode)) {
-    //     char hugepage_filename[PATH_MAX];
-    //     snprintf(hugepage_filename, PATH_MAX, HUGETLBFS_PATH "/dqdk%d", atomic_fetch_add_explicit(&ctx->huge_allocations, 1, memory_order_relaxed));
-    //     dlog_infov("Allocating huge pages memory to %s", hugepage_filename);
-    //     int fd = open(hugepage_filename, O_CREAT | O_RDWR, 0755);
-    //     if (fd < 0) {
-    //         dlog_error2("open", fd);
-    //         return NULL;
-    //     }
-
-    //     if (ftruncate(fd, size) < 0) {
-    //         dlog_error2("ftruncate", -1);
-    //         return NULL;
-    //     }
-
-    //     u8* map = dqdk_map(ctx, size, MAP_PRIVATE | MAP_HUGETLB | pagesz, fd);
-    //     close(fd);
-    //     unlink(hugepage_filename);
-    //     return map;
-    // }
-
-    needed_hgpg = get_hugepages(ctx->numa_node, pagesz) + additional_pages;
-    int page = set_hugepages(ctx->numa_node, needed_hgpg, pagesz);
-    dlog_infov("Reserved huge pages are %d now", page);
-
-    return dqdk_malloc(ctx, size, MAP_HUGETLB | pagesz);
-}
-
 int dqdk_uses_hugepages(dqdk_ctx_t* ctx)
 {
     if (!ctx)
@@ -1178,10 +1076,24 @@ dqdk_stats_t* dqdk_worker_stats(dqdk_ctx_t* ctx, u32 worker_index)
     return &worker->stats;
 }
 
+double dqdk_calc_ring_msec_capacity(u64 ringsz, int ifspeed) {
+    return (ringsz * 8e3) / (ifspeed * (1ULL << 20));
+}
+
 double dqdk_ring_msec_capacity(dqdk_ctx_t* ctx)
 {
     if (!ctx)
         return 0;
 
-    return (ctx->ringsz * 8e3) / (ctx->ifspeed * (1ULL << 20));
+    return dqdk_calc_ring_msec_capacity(ctx->ringsz, ctx->ifspeed);
+}
+
+u64 dqdk_calc_ring_count(u64 ringsz, u32 payloadsz)
+{
+    return get_powerof2(ringsz / payloadsz);
+}
+
+u64 dqdk_calc_ring_size(u32 count, u32 payloadsz)
+{
+    return cne_ring_get_memsize_elem(payloadsz, count);
 }

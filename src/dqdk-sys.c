@@ -276,22 +276,32 @@ int dqdk_get_link_speed(const char* iface)
         return -1;
 
     struct ifreq ifr;
-    struct ethtool_cmd edata = { 0 };
-
     memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, iface, IFNAMSIZ);
-    ifr.ifr_data = (caddr_t)&edata;
+    strncpy(ifr.ifr_name, iface, IFNAMSIZ - 1);
 
-    edata.cmd = ETHTOOL_GSET;
+    struct ethtool_link_settings link_settings;
+    memset(&link_settings, 0, sizeof(link_settings));
+    link_settings.cmd = ETHTOOL_GLINKSETTINGS;
 
-    if (ioctl(sockfd, SIOCETHTOOL, &ifr) == -1) {
+    ifr.ifr_data = (char*)&link_settings;
+    if (ioctl(sockfd, SIOCETHTOOL, &ifr) == 0 && link_settings.speed != 0 && link_settings.speed != ((__u32)-1)) {
         close(sockfd);
-        return -1;
+        return link_settings.speed;
+    }
+
+    // legacy GSET
+    struct ethtool_cmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.cmd = ETHTOOL_GSET;
+
+    ifr.ifr_data = (char*)&cmd;
+    if (ioctl(sockfd, SIOCETHTOOL, &ifr) == 0) {
+        close(sockfd);
+        return ethtool_cmd_speed(&cmd);
     }
 
     close(sockfd);
-
-    return (edata.speed_hi << 16) | edata.speed;
+    return -1;
 }
 
 struct tm* getlocaltime(void)
@@ -303,4 +313,22 @@ struct tm* getlocaltime(void)
         return &zerotm;
 
     return localtime(&tval);
+}
+
+u64 get_powerof2(u64 n)
+{
+    if (n == 0)
+        return 1;
+
+    if (ispower2(n))
+        return n;
+
+    n--;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    n |= n >> 32;
+    return n + 1;
 }

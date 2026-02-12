@@ -10,5 +10,8 @@ iouring-test: %: %.c
 udpsock: %: %.c
 	@gcc -Wall -g -O2 -D_GNU_SOURCE $< -lpthread -o $@
 
+memcpytime: %: %.c
+	@gcc -Wall -g -O3 -D_GNU_SOURCE $< -o $@
+
 clean:
 	@rm -rf $(TARGETS)

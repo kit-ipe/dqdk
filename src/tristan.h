@@ -6,7 +6,6 @@
 #include "dqdk.h"
 #include "dqdk-async-processor.h"
 #include "ds/bhisto.h"
-#include "ds/cne_ring.h"
 
 #define RINGBUFSZ (100ULL * 1024 * 1024 * 1024)
 #define CONTROLLER_PORT 9000
@@ -48,12 +47,13 @@ typedef struct listwave tristan_listwave_t;
 
 #define TRISTAN_HISTO_EVT_SZ sizeof(tristan_energy_evt_t)
 
-#define HISTOBINS_COUNT (2 << 23) // = 2 ^ 24 values
-#define HISTOBUCKETSZ (2 << 7)
-#define HISTO_COUNT 6
+#define CHANNELHISTO_COUNT 6
 #define TILECHNLS_COUNT 168
 #define TILES_COUNT 9
 #define CHNLS_COUNT (TILECHNLS_COUNT * TILES_COUNT)
+
+#define HISTO_BUCKETSCOUNT (1 << 8)
+#define HISTO_MAXVAL (1 << 24) // = 2 ^ 24 values
 
 typedef enum {
     TRISTAN_MODE_WAVEFORM,
@@ -65,7 +65,7 @@ typedef enum {
 extern char* tristan_modes[];
 
 typedef struct {
-    bhisto_t* histograms[HISTO_COUNT];
+    bhisto_t* histograms[CHANNELHISTO_COUNT];
 } chnl_t;
 
 typedef struct {
@@ -85,6 +85,7 @@ typedef struct {
     struct tm* timestamp;
     u32 payloadsz;
     s64 duration;
+    int id;
 } tristan_t;
 
 #define TRISTAN_HISTO_SZ (sizeof(tristan_histo_t))

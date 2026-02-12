@@ -24,6 +24,8 @@ static inline void dqdk_prefetch(const volatile void* p)
 }
 
 #define ispower2(x) ((x) && (!(x & (x - 1))))
+#define div_by_power2(x, n) ((x) >> (n))
+#define modulo_power2(x, n) ((x) & ((1 << (n)) - 1))
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 #define AVG(x, y) (((y) == 0) ? 0 : ((x) * 1.0 / (y)))

@@ -18,13 +18,9 @@
 #include "dlog.h"
 #include "ctypes.h"
 
-#define HUGEPAGE_2MB_SIZE 2097152UL
-#define HUGEPAGE_1GB_SIZE 1073741824UL
 #define HUGETLB_PATH_2MB "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
 #define HUGETLB_PATH_1GB "/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages"
-#define HUGETLBFS_PATH "/dev/hugepages"
-#define HUGETLB_CALC_2MB(size) ((u32)ceil(size * 1.0 / HUGEPAGE_2MB_SIZE))
-#define HUGETLB_CALC_1GB(size) ((u32)ceil(size * 1.0 / HUGEPAGE_1GB_SIZE))
+
 #define BAD_CLOCK ((u64) - 1)
 #define INT_BUFFER 100
 #define STRING_BUFFER 1024
@@ -74,5 +70,6 @@ struct tm* getlocaltime(void);
 
 #define popcountl(x) __builtin_popcountl(x)
 #define log2l(x) (31 - __builtin_clz(x))
+u64 get_powerof2(u64 n);
 
 #endif

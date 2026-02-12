@@ -23,8 +23,8 @@ static char* getrawfilename(tristan_t* tristan)
     int buffersz = PATH_MAX * 2;
 
     char* path = calloc(buffersz, sizeof(char));
-    snprintf(path, buffersz, "%s/tristan-%s-%04d-%02d-%02d-%02d-%02d-%02d.bin",
-        tristan->base_path, tristan_modes[tristan->mode], tm->tm_year + 1900,
+    snprintf(path, buffersz, "%s/tristan-be%d-%s-%04d-%02d-%02d-%02d-%02d-%02d.bin",
+        tristan->base_path, tristan->id, tristan_modes[tristan->mode], tm->tm_year + 1900,
         tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
 
     return path;
@@ -36,8 +36,8 @@ static char* gethistofilename(tristan_t* tristan)
     int buffersz = PATH_MAX * 2;
 
     char* path = calloc(buffersz, sizeof(char));
-    snprintf(path, buffersz, "%s/tristan-histo-%04d-%02d-%02d-%02d-%02d-%02d.csv",
-        tristan->base_path, tm->tm_year + 1900, tm->tm_mon + 1,
+    snprintf(path, buffersz, "%s/tristan-be%d-histo-%04d-%02d-%02d-%02d-%02d-%02d.csv",
+        tristan->base_path, tristan->id, tm->tm_year + 1900, tm->tm_mon + 1,
         tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
 
     return path;
@@ -67,12 +67,17 @@ int bhisto_csv_dump(bhisto_t* bhisto, int fd, int channel, int histo)
     return bhisto_iterate(bhisto, bhist_csv_dump_row, &priv);
 }
 
-static int is_store_raw(dqdk_ctx_t* ctx, tristan_mode_t mode, s64 duration)
+static int is_store_raw(u64 ringsz, u32 payloadsz, char* ifname, tristan_mode_t mode, s64 duration)
 {
     if (mode == TRISTAN_MODE_WAVEFORM)
         return 1;
 
-    return (mode == TRISTAN_MODE_LISTWAVE || mode == TRISTAN_MODE_LISTMODE) && duration < dqdk_ring_msec_capacity(ctx);
+    int ifspeed = dqdk_get_link_speed(ifname);
+    if (ifspeed < 0)
+        return -1;
+    u64 count = dqdk_calc_ring_count(ringsz, payloadsz);
+    ringsz = dqdk_calc_ring_size(count, payloadsz);
+    return (mode == TRISTAN_MODE_LISTWAVE || mode == TRISTAN_MODE_LISTMODE) && duration < dqdk_calc_ring_msec_capacity(ringsz, ifspeed);
 }
 
 static int is_store_histo(tristan_mode_t mode)
@@ -97,12 +102,22 @@ static dqdk_always_inline u32 get_energy_events_count(tristan_mode_t mode, u32 p
     return 0;
 }
 
-int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, s64 duration, u8 strip_wfm)
+int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, s64 duration, int id, u8 strip_wfm)
 {
     private->strip_wfm = strip_wfm;
     private->timestamp = getlocaltime();
     private->payloadsz = ctx->payloadsz;
     private->duration = duration;
+    private->rawdata_fd = -1;
+    private->histo_fd = -1;
+    private->id = id;
+
+    private->histo = calloc(1, TRISTAN_HISTO_SZ);
+    if (!private->histo) {
+        dlog_error("No memory to allocate histograms");
+        return -1;
+    }
+
     atomic_init(&private->total_bytes, 0);
     atomic_init(&private->total_events, 0);
 
@@ -121,9 +136,10 @@ int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, s64 duratio
         strncpy(private->base_path, basedir, PATH_MAX - 1);
     dlog_infov("Saving output files (if any) in %s.", private->base_path);
 
-    if (is_store_raw(ctx, private->mode, private->duration)) {
+    if (is_store_raw(ctx->ringsz, ctx->payloadsz, ctx->ifname, private->mode, private->duration) > 0) {
         char* path = getrawfilename(private);
         private->rawdata_fd = open(path, O_CREAT | O_WRONLY, 0644);
+        dlog_infov("Raw File Path: %s", path);
         free(path);
         if (private->rawdata_fd < 0) {
             dlog_error2("open", private->rawdata_fd);
@@ -132,25 +148,36 @@ int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, s64 duratio
 
         posix_fadvise(private->rawdata_fd, 0, 0, POSIX_FADV_SEQUENTIAL);
         posix_fadvise(private->rawdata_fd, 0, 0, POSIX_FADV_DONTNEED);
-    } else
-        private->rawdata_fd = -1;
+    }
 
     if (is_store_histo(private->mode)) {
+        for (int channel = 0; channel < CHNLS_COUNT; channel++) {
+            for (int hidx = 0; hidx < CHANNELHISTO_COUNT; hidx++) {
+                private->histo->channels[channel].histograms[hidx] = bhisto(HISTO_BUCKETSCOUNT, HISTO_MAXVAL, ctx->numa_node, BHISTO_FLAGS_THREADSAFE);
+                if (!private->histo->channels[channel].histograms[hidx]) {
+                    dlog_error("Error initializing histograms");
+                    return -1;
+                }
+            }
+        }
+
         char* path = gethistofilename(private);
         private->histo_fd = open(path, O_CREAT | O_WRONLY, 0644);
+        dlog_infov("Histogram File Path: %s", path);
         free(path);
         if (private->histo_fd < 0) {
             dlog_error2("open", private->histo_fd);
             return -errno;
         }
         posix_fadvise(private->rawdata_fd, 0, 0, POSIX_FADV_DONTNEED);
-    } else
-        private->histo_fd = -1;
+    }
 
-    private->consumer = dqdk_async_processor_init(ctx, 1, private, async_processor);
-    if (!private->consumer) {
-        dlog_error("Error initializing async consumers");
-        return -1;
+    if (!ctx->frame_processor) {
+        private->consumer = dqdk_async_processor_init(ctx, 1, private, async_processor);
+        if (!private->consumer) {
+            dlog_error("Error initializing async consumers");
+            return -1;
+        }
     }
 
     return 0;
@@ -160,8 +187,10 @@ int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_t* priv
 {
     int buffersz = 8192;
 
-    dlog_info("Waiting for Async Consumer to finish");
-    dqdk_async_processor_cancel(private->consumer);
+    if (ctx && !ctx->frame_processor) {
+        dlog_info("Waiting for Async Consumer to finish processing present data and saving files...");
+        dqdk_async_processor_cancel(private->consumer);
+    }
 
     tristan_stats_t stats = {
         .total_bytes = atomic_load_explicit(&private->total_bytes, memory_order_relaxed),
@@ -200,7 +229,7 @@ int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_t* priv
 
         if (private->histo) {
             for (int channel = 0; channel < CHNLS_COUNT; channel++) {
-                for (int hidx = 0; hidx < HISTO_COUNT; hidx++) {
+                for (int hidx = 0; hidx < CHANNELHISTO_COUNT; hidx++) {
                     if (bhisto_csv_dump(private->histo->channels[channel].histograms[hidx], private->histo_fd, channel, hidx) < 0)
                         dlog_errorv("Error writing histogram %d in channel %d", hidx, channel);
                     bhisto_free(private->histo->channels[channel].histograms[hidx]);
@@ -221,12 +250,12 @@ int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_t* priv
     return 0;
 }
 
-static int histogram_event(tristan_histo_t* histo, tristan_energy_evt_t* evt)
+static dqdk_always_inline int histogram_event(tristan_histo_t* histo, tristan_energy_evt_t* evt)
 {
     int histo_idx = log2l(evt->mask);
     if (evt->channel >= CHNLS_COUNT
-        || histo_idx >= HISTO_COUNT
-        || evt->energy >= HISTOBINS_COUNT) {
+        || histo_idx >= CHANNELHISTO_COUNT
+        || evt->energy >= HISTO_MAXVAL) {
         dlog_errorv("Out of bounds Energy Event: Channel ID=%u, Histogram Index=%u, Energy=%u", evt->channel, histo_idx, evt->energy);
         return -1;
     }
@@ -237,10 +266,12 @@ static int histogram_event(tristan_histo_t* histo, tristan_energy_evt_t* evt)
     return 0;
 }
 
-static dqdk_always_inline int process_events_unrolled8(tristan_t* private, tristan_energy_evt_t* evt, u32 nbEvents)
+static dqdk_always_inline int process_events_unrolled16(tristan_t* private, tristan_energy_evt_t* evt, u32 nbEvents)
 {
+    u32 batch_len = 16;
+    u32 mask = batch_len - 1;
     u32 e = 0;
-    for (e = 0; e < (nbEvents & ~0x7); e += 8) {
+    for (e = 0; e < (nbEvents & ~mask); e += batch_len) {
         histogram_event(private->histo, &evt[e]);
         histogram_event(private->histo, &evt[e + 1]);
         histogram_event(private->histo, &evt[e + 2]);
@@ -249,8 +280,32 @@ static dqdk_always_inline int process_events_unrolled8(tristan_t* private, trist
         histogram_event(private->histo, &evt[e + 5]);
         histogram_event(private->histo, &evt[e + 6]);
         histogram_event(private->histo, &evt[e + 7]);
+        histogram_event(private->histo, &evt[e + 8]);
+        histogram_event(private->histo, &evt[e + 9]);
+        histogram_event(private->histo, &evt[e + 10]);
+        histogram_event(private->histo, &evt[e + 11]);
+        histogram_event(private->histo, &evt[e + 12]);
+        histogram_event(private->histo, &evt[e + 13]);
+        histogram_event(private->histo, &evt[e + 14]);
+        histogram_event(private->histo, &evt[e + 15]);
     }
-    switch (nbEvents & 0x7) {
+    switch (nbEvents & mask) {
+    case 15:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    case 14:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    case 13:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    case 12:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    case 11:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    case 10:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    case 9:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
+    case 8:
+        histogram_event(private->histo, &evt[e++]); /* fallthrough */
     case 7:
         histogram_event(private->histo, &evt[e++]); /* fallthrough */
     case 6:
@@ -270,21 +325,16 @@ static dqdk_always_inline int process_events_unrolled8(tristan_t* private, trist
     return 0;
 }
 
-static dqdk_always_inline int tristan_process(dqdk_async_processor_t* proc, tristan_t* private, u8* buffer, u32 len, u32 burst)
+#define SWEETSPOT_BATCHSZ 16
+
+static dqdk_always_inline int tristan_process(tristan_t* private, u8* buffer, u32 len, u32 burst)
 {
     int ret = 0;
-    // Fetch from ring
-    burst = dqdk_async_processor_nfetch(proc, buffer, private->payloadsz, burst);
-    if (!burst)
-        return -ENOENT;
-
     u32 nbEvents = get_energy_events_count(private->mode, private->payloadsz);
     if (private->histo_fd > 0) {
-        for (u32 i = 0; i < burst; i++) {
-            // Compute histogram in listwave, listmode, and energy histogram
-            tristan_energy_evt_t* evt = (tristan_energy_evt_t*)buffer;
-            process_events_unrolled8(private, evt, nbEvents);
-        }
+        // Compute histogram in listwave, listmode, and energy histogram
+        for (u32 i = 0; i < burst; i++)
+            process_events_unrolled16(private, (tristan_energy_evt_t*)buffer, nbEvents);
     }
 
     if (private->rawdata_fd >= 0) {
@@ -303,10 +353,9 @@ static dqdk_always_inline int tristan_process(dqdk_async_processor_t* proc, tris
 
 static void* async_processor(dqdk_async_processor_t* proc, void* private)
 {
-    int ret = 0, burst = 1;
+    int ret = 0, burst = SWEETSPOT_BATCHSZ;
     tristan_t* tristan = (tristan_t*)private;
     u8* buffer = (u8*)calloc(burst, tristan->payloadsz);
-    u8* buffer_start = buffer;
     time_t t0 = time(NULL), t1;
     u64 rate = 0;
 
@@ -315,43 +364,42 @@ static void* async_processor(dqdk_async_processor_t* proc, void* private)
 
     u32 len = tristan->strip_wfm ? TRISTAN_HISTO_EVT_SZ : tristan->payloadsz;
     while (!dqdk_async_processor_has_stopped(proc)) {
-        ret = tristan_process(proc, tristan, buffer, len, burst);
-        if (ret == -ENOSPC)
-            goto exit;
+        ret = dqdk_async_processor_nfetch(proc, buffer, tristan->payloadsz, burst);
+        if (!ret)
+            continue;
 
+        ret = tristan_process(tristan, buffer, len, burst);
         if (ret)
             continue;
 
-        rate++;
-        t1 = time(NULL);
-        if (t1 - t0 >= 1) {
-            printf("Processed %llu/%lusec\n", rate, t1 - t0);
-            t0 = t1;
-            rate = 0;
-        }
+        rate += burst;
     }
 
     // Empty ring
     while (!dqdk_async_processor_isempty(proc)) {
-        ret = tristan_process(proc, tristan, buffer, len, burst);
-        if (ret == -ENOSPC)
-            goto exit;
+        // Fetch from ring
+        ret = dqdk_async_processor_nfetch(proc, buffer, tristan->payloadsz, burst);
+        if (!ret)
+            continue;
 
+        ret = tristan_process(tristan, buffer, len, burst);
         if (ret)
             continue;
 
-        rate++;
-        t1 = time(NULL);
-        if (t1 - t0 >= 1) {
-            printf("Processed %llu/%lusec\n", rate, t1 - t0);
-            t0 = t1;
-            rate = 0;
-        }
+        rate += burst;
     }
 
-exit:
-    free(buffer_start);
+    t1 = time(NULL);
+    printf("Processed %llu in %lusec\n", rate, t1 - t0);
+
+    free(buffer);
     return (void*)(long)ret;
+}
+
+static int process_unbuffered_frame(dqdk_worker_t* worker, u8* data, u32 datalen)
+{
+    tristan_t* tristan = (tristan_t*)worker->private;
+    return tristan_process(tristan, data, datalen, 1);
 }
 
 void tristan_usage(char* program)
@@ -372,6 +420,7 @@ void tristan_usage(char* program)
     printf("    -A <irq1,irq2,...>           Set affinity mapping between application threads and drivers queues\n");
     printf("                                 e.g. q1 to irq1, q2 to irq2,...\n");
     printf("    -B                           Enable NAPI busy-poll\n");
+    printf("    -I                           This DQDK instance ID\n");
     printf("    -H                           Considering Hyper-threading is enabled, this flag will assign affinity\n");
     printf("                                 of softirq and the app to two logical cores of the same physical core.\n");
     printf("    -G                           Activate Huge Pages for UMEM allocation\n");
@@ -386,6 +435,7 @@ int main(int argc, char** argv)
     // options values
     char* opt_ifname = NULL;
     char basedir[PATH_MAX] = { 0 };
+    int opt_dqdk_id = -1;
     u32 opt_batchsize = 64, opt_queues[MAX_QUEUES], opt_irqs[MAX_QUEUES];
     u8 opt_umem_flags = 0, opt_stripwfm = 0;
     u32 opt_payloadsz = 3392;
@@ -417,7 +467,7 @@ int main(int argc, char** argv)
     memset(opt_queues, -1, sizeof(u32) * MAX_QUEUES);
     memset(opt_irqs, -1, sizeof(u32) * MAX_QUEUES);
 
-    while ((opt = getopt(argc, argv, "a:b:d:hi:q:ws:lm:A:BDHGSP:W")) != -1) {
+    while ((opt = getopt(argc, argv, "a:b:d:hi:q:ws:lm:A:BDI:HGSP:W")) != -1) {
         switch (opt) {
         case 'h':
             tristan_usage(argv[0]);
@@ -459,6 +509,9 @@ int main(int argc, char** argv)
             break;
         case 'i':
             opt_ifname = optarg;
+            break;
+        case 'I':
+            opt_dqdk_id = atoi(optarg);
             break;
         case 'q':
             if (strchr(optarg, '-') == NULL) {
@@ -538,8 +591,13 @@ int main(int argc, char** argv)
         }
     }
 
+    if (opt_dqdk_id < 0) {
+        dlog_error("Invalid DQDK ID. Use positive integer");
+        goto cleanup;
+    }
+
     dlog_info("Waiting for Control Software to connect...");
-    controller = dqdk_controller_start(CONTROLLER_PORT);
+    controller = dqdk_controller_start(CONTROLLER_PORT + opt_dqdk_id);
     if (controller == NULL)
         goto cleanup;
 
@@ -550,8 +608,8 @@ int main(int argc, char** argv)
 
     dqdk_controller_report_status(controller, DQDK_STATUS_STARTED, NULL);
 
-    ctx = dqdk_ctx_init(opt_ifname, opt_queues, nbqueues, opt_umem_flags, UMEM_SIZE,
-        opt_batchsize, opt_payloadsz, RINGBUFSZ, &opts);
+    dqdk_frame_processor_t proc = is_store_raw(RINGBUFSZ, opt_payloadsz, opt_ifname, private.mode, opt_duration) ? NULL : process_unbuffered_frame;
+    ctx = dqdk_ctx_init(opt_ifname, opt_queues, nbqueues, opt_umem_flags, UMEM_SIZE, opt_batchsize, opt_payloadsz, RINGBUFSZ, proc, &opts);
 
     if (!ctx) {
         dlog_info("Error Initializing DQDK Context");
@@ -567,13 +625,13 @@ int main(int argc, char** argv)
 
     dqdk_for_ports_range(ctx, start_port, end_port);
 
-    if (tristan_init(ctx, &private, basedir, opt_duration, opt_stripwfm) < 0) {
+    if (tristan_init(ctx, &private, basedir, opt_duration, opt_dqdk_id, opt_stripwfm) < 0) {
         dqdk_controller_error(controller);
         goto cleanup;
     }
 
     for (u32 i = 0; i < nbqueues; i++) {
-        if (dqdk_worker_init(ctx, opt_queues[i], opt_irqs[i]) < 0) {
+        if (dqdk_worker_init(ctx, opt_queues[i], opt_irqs[i], (void*)&private) < 0) {
             dqdk_controller_error(controller);
             goto cleanup;
         }

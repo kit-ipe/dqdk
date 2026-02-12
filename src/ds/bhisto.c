@@ -5,14 +5,20 @@
 #include <stdatomic.h>
 
 #include "ds/bhisto.h"
+#include "dqdk-mem.h"
+#include "dqdk-sys.h"
 
-bhisto_t* bhisto(u32 bucketsnb, u32 max)
+bhisto_t* bhisto(u32 bucketsnb, u32 max, int numa_node, int flags)
 {
-    u32 bucketsz = max / bucketsnb;
-    int finalbucketsz = max % bucketsnb;
-
     if (bucketsnb == 0 || bucketsnb == 1 || max == 0)
         return NULL;
+
+    if (flags & ~BHISTO_FLAGS)
+        return NULL;
+
+    u32 bucketsz = get_powerof2(max / bucketsnb);
+    bucketsnb = max / bucketsz;
+    int finalbucketsz = max % bucketsnb;
 
     if (finalbucketsz != 0)
         bucketsnb++;
@@ -31,6 +37,9 @@ bhisto_t* bhisto(u32 bucketsnb, u32 max)
     bhist->bucketsz = bucketsz;
     bhist->buckets = buckets;
     bhist->max_value = max;
+    bhist->numa_node = numa_node;
+    bhist->order = log2l(bucketsz);
+    bhist->flags = flags;
 
     if (finalbucketsz)
         bhist->final_bucketsz = finalbucketsz;
@@ -38,7 +47,7 @@ bhisto_t* bhisto(u32 bucketsnb, u32 max)
     return bhist;
 }
 
-u32* bhisto_get(bhisto_t* bhisto, u32 bin)
+dqdk_always_inline u32* bhisto_get(bhisto_t* bhisto, u32 bin)
 {
     if (!bhisto)
         return NULL;
@@ -49,38 +58,47 @@ u32* bhisto_get(bhisto_t* bhisto, u32 bin)
     int index = bin - 1;
     int bid = 0, mod = 0;
     if (bin) {
-        bid = index / bhisto->bucketsz;
-        mod = index % bhisto->bucketsz;
+        bid = div_by_power2(index, bhisto->order);
+        mod = modulo_power2(index, bhisto->order);
     }
 
-    u32* expected = atomic_load_explicit(&bhisto->buckets[bid].bucket_array, memory_order_relaxed);
-    u32* allocated = NULL;
-    while (expected == NULL) {
-        if (!allocated) {
-            allocated = (u32*)calloc(bhisto->bucketsz, sizeof(u32));
-            if (!allocated)
-                return NULL;
+    if (bhisto->flags & BHISTO_FLAGS_THREADSAFE) {
+        u32* expected = atomic_load_explicit(&bhisto->buckets[bid].bucket_array, memory_order_relaxed);
+        u32* allocated = NULL;
+        while (dqdk_unlikely(expected == NULL)) {
+            if (!allocated) {
+                allocated = (u32*)calloc(bhisto->bucketsz, sizeof(u32));
+                if (!allocated)
+                    return NULL;
+            }
+
+            if (atomic_compare_exchange_weak_explicit(&bhisto->buckets[bid].bucket_array,
+                    &expected, allocated, memory_order_release, memory_order_relaxed))
+                break;
+
+            if (expected != NULL)
+                free(allocated);
         }
+    } else {
+        if (!bhisto->buckets[bid].bucket_array)
+            bhisto->buckets[bid].bucket_array = (u32*)calloc(bhisto->bucketsz, sizeof(u32));
 
-        if (atomic_compare_exchange_weak_explicit(&bhisto->buckets[bid].bucket_array,
-                &expected, allocated, memory_order_release, memory_order_relaxed))
-            break;
-
-        if (expected != NULL)
-            free(allocated);
     }
 
     return &bhisto->buckets[bid].bucket_array[mod];
 }
 
-int bhisto_increment(bhisto_t* bhisto, u32 bin)
+dqdk_always_inline int bhisto_increment(bhisto_t* bhisto, u32 bin)
 {
     u32* freq = bhisto_get(bhisto, bin);
     if (!freq)
         return -EFAULT;
 
-    int old = atomic_fetch_add_explicit(freq, 1, memory_order_relaxed);
-    return old + 1;
+    if (bhisto->flags & BHISTO_FLAGS_THREADSAFE)
+        atomic_fetch_add_explicit(freq, 1, memory_order_relaxed);
+    else
+        (*freq)++;
+    return 0;
 }
 
 int bhisto_free(bhisto_t* bhisto)
@@ -90,7 +108,7 @@ int bhisto_free(bhisto_t* bhisto)
 
     for (size_t i = 0; i < bhisto->bucket_count; i++)
         if (bhisto->buckets[i].bucket_array)
-            free(bhisto->buckets[i].bucket_array);
+            dqdk_free((u8*)bhisto->buckets[i].bucket_array, bhisto->bucketsz * sizeof(u32));
     free(bhisto->buckets);
 
     free(bhisto);
