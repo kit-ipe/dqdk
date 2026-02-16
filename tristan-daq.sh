@@ -4,7 +4,7 @@ MODE=$2
 PORTS=$3
 DURATION=$4
 PAYLOADSZ=$5
-DQDK_ID=1
+DQDK_ID=0
 PROFILE=$6
 
 DQDK_BIN=/home/jalal/dqdk/src/dqdk

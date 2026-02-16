@@ -14,8 +14,13 @@ struct energy_evt {
     u16 id;
     u16 channel;
     u32 energy : 24;
-    u8 mask;
-    u16 trigger_info;
+
+    // Auxiliary Information
+    u8 trigger_flags; // bits 0 to 7
+    u8 hist_class : 3; // bits 8 to 10;
+    u8 reserved: 5; // bits 11 to 15
+    u8 multiplicity; // bits 16 to 24
+    
     u64 timestamp : 48;
 } dqdk_packed;
 

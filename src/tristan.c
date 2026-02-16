@@ -252,16 +252,15 @@ int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_t* priv
 
 static dqdk_always_inline int histogram_event(tristan_histo_t* histo, tristan_energy_evt_t* evt)
 {
-    int histo_idx = log2l(evt->mask);
     if (evt->channel >= CHNLS_COUNT
-        || histo_idx >= CHANNELHISTO_COUNT
+        || evt->hist_class >= CHANNELHISTO_COUNT
         || evt->energy >= HISTO_MAXVAL) {
-        dlog_errorv("Out of bounds Energy Event: Channel ID=%u, Histogram Index=%u, Energy=%u", evt->channel, histo_idx, evt->energy);
+        dlog_errorv("Out of bounds Energy Event: Channel ID=%u, Histogram Index=%u, Energy=%u", evt->channel, evt->hist_class, evt->energy);
         return -1;
     }
 
-    if (bhisto_increment(histo->channels[evt->channel].histograms[histo_idx], evt->energy) < 0)
-        dlog_errorv("bhisto_increment failed. Channel=%d, Histogram=%d, Bin=%d", evt->channel, histo_idx, evt->energy);
+    if (bhisto_increment(histo->channels[evt->channel].histograms[evt->hist_class], evt->energy) < 0)
+        dlog_errorv("bhisto_increment failed. Channel=%d, Histogram=%d, Bin=%d", evt->channel, evt->hist_class, evt->energy);
 
     return 0;
 }
