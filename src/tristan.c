@@ -367,7 +367,7 @@ static void* async_processor(dqdk_async_processor_t* proc, void* private)
         if (!ret)
             continue;
 
-        ret = tristan_process(tristan, buffer, len, burst);
+        ret = tristan_process(tristan, buffer, len, ret);
         if (ret)
             continue;
 
@@ -381,7 +381,7 @@ static void* async_processor(dqdk_async_processor_t* proc, void* private)
         if (!ret)
             continue;
 
-        ret = tristan_process(tristan, buffer, len, burst);
+        ret = tristan_process(tristan, buffer, len, ret);
         if (ret)
             continue;
 
