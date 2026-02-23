@@ -4,17 +4,17 @@ MODE=$2
 PORTS=$3
 DURATION=$4
 PAYLOADSZ=$5
-DQDK_ID=0
-PROFILE=$6
+DQDK_ID=$6
+PROFILE=$7
 
 DQDK_BIN=/home/jalal/dqdk/src/dqdk
 BASE_DIR=/mnt/raid0
 BATCH_SIZE=2048
 
 Q=3
-if [[ "$#" -lt 3 ]]; then
+if [[ "$#" -lt 6 ]]; then
     echo "$0: Incorrect number of parameters!"
-    echo "$0 <NIC> <tristan-mode> <udp-port-range> [duration] [profile]"
+    echo "$0 <NIC> <tristan-mode> <udp-port-range> <duration-ms> <payload-size> <dqdk-id> [profile]"
     exit
 fi
 
