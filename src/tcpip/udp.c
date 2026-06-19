@@ -1,0 +1,97 @@
+#include <netinet/ip.h>
+#include <netinet/if_ether.h>
+#include <netinet/udp.h>
+#include <limits.h>
+#include <string.h>
+
+#include "tcpip/ipv4.h"
+#include "tcpip/udp.h"
+
+dqdk_always_inline int udp_audit_checksum(struct udphdr* udp, u32 src_ip, u32 dst_ip, u16 udplen)
+{
+    if (udp->check == 0) {
+        return 1;
+    }
+
+    u16 rcvd_csum = udp->check;
+    udp->check = 0;
+    u16 calc_csum = udp_csum(src_ip, dst_ip, udplen, IPPROTO_UDP, (u16*)udp);
+    return calc_csum == rcvd_csum;
+}
+
+dqdk_always_inline int udp_audit(struct udphdr* udp, u32 src_ip, u32 dst_ip, u16 udplen)
+{
+    (void)src_ip;
+    (void)dst_ip;
+    if (ntohs(udp->len) != udplen) { // || !udp_audit_checksum(udp, src_ip, dst_ip, udplen)
+        return 0;
+    }
+
+    return 1;
+}
+
+dqdk_always_inline void* memset32_htonl(void* dest, u32 val, u32 size)
+{
+    u32* ptr = (u32*)dest;
+    u32 i;
+
+    val = htonl(val);
+
+    // move 4 bytes to the nearest multiple of 4 that is smaller than size
+    for (i = 0; i < (size & (~0x3)); i += 4) {
+        ptr[i >> 2] = val;
+    }
+
+    for (; i < size; i++)
+        ((char*)dest)[i] = ((char*)&val)[i & 3];
+    return dest;
+}
+
+dqdk_always_inline void udp_create_frame(u8* pkt_data, u8* daddr, u8* saddr, u16 pktsize)
+{
+    struct pktgen_hdr* pktgen_hdr;
+    struct udphdr* udp_hdr;
+    struct iphdr* ip_hdr;
+
+    struct ethhdr* eth_hdr = (struct ethhdr*)pkt_data;
+
+    udp_hdr = (struct udphdr*)(pkt_data + sizeof(struct ethhdr) + sizeof(struct iphdr));
+    ip_hdr = (struct iphdr*)(pkt_data + sizeof(struct ethhdr));
+    pktgen_hdr = (struct pktgen_hdr*)(pkt_data + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr));
+
+    /* ethernet header */
+    memcpy(eth_hdr->h_dest, daddr, ETH_ALEN);
+    memcpy(eth_hdr->h_source, saddr, ETH_ALEN);
+    eth_hdr->h_proto = htons(ETH_P_IP);
+
+    /* IP header */
+    ip_hdr->version = IPVERSION;
+    ip_hdr->ihl = 0x5; /* 20 byte header */
+    ip_hdr->tos = 0x0;
+    ip_hdr->tot_len = htons(pktsize - ETH_HDR_SIZE);
+    ip_hdr->id = 0;
+    ip_hdr->frag_off = 0;
+    ip_hdr->ttl = IPDEFTTL;
+    ip_hdr->protocol = IPPROTO_UDP;
+    ip_hdr->saddr = htonl(0xc0a80a67);
+    ip_hdr->daddr = htonl(0xc0a80a01);
+
+    /* IP header checksum */
+    ip_hdr->check = 0;
+    ip_hdr->check = ip_fast_csum((const void*)ip_hdr, ip_hdr->ihl);
+
+    /* UDP header */
+    udp_hdr->source = htons(0x1000);
+    udp_hdr->dest = htons(0x1000);
+    u16 udplen = pktsize - ETH_HDR_SIZE - ip4_get_header_size(ip_hdr);
+    udp_hdr->len = htons(udplen);
+
+    pktgen_hdr->pgh_magic = htonl(PKTGEN_MAGIC);
+
+    /* UDP data */
+    memset32_htonl(pkt_data + PKT_HDR_SIZE, 0x12345678, pktsize);
+
+    /* UDP header checksum */
+    udp_hdr->check = 0;
+    udp_hdr->check = udp_csum(ip_hdr->saddr, ip_hdr->daddr, udplen, IPPROTO_UDP, (u16*)udp_hdr);
+}

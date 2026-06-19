@@ -10,7 +10,7 @@
 #include <netinet/udp.h>
 
 #define bpf_unlikely(cond) __builtin_expect(!!(cond), 0)
-
+#define PAYLOAD(hdr) ((void*)((hdr) + 1))
 #define MAX_SOCKS 16
 #define MAX_PORTS 64
 
@@ -52,7 +52,7 @@ int dqdk_forwarder(struct xdp_md* ctx)
     }
 
     struct ethhdr* eth = (struct ethhdr*)data;
-    if (bpf_unlikely(eth + 1 >= data_end)) {
+    if (bpf_unlikely(PAYLOAD(eth) >= data_end)) {
         bpf_printk("XDP_DROP: %d\n", __LINE__);
         return XDP_DROP;
     }
@@ -63,7 +63,7 @@ int dqdk_forwarder(struct xdp_md* ctx)
     }
 
     struct iphdr* ip = (struct iphdr*)(eth + 1);
-    if (bpf_unlikely(ip + 1 >= data_end)) {
+    if (bpf_unlikely(PAYLOAD(ip) >= data_end)) {
         bpf_printk("XDP_DROP: %d\n", __LINE__);
         return XDP_DROP;
     }
@@ -74,7 +74,7 @@ int dqdk_forwarder(struct xdp_md* ctx)
     }
 
     struct udphdr* udp = (struct udphdr*)(ip + 1);
-    if (bpf_unlikely(udp + 1 >= data_end)) {
+    if (bpf_unlikely(PAYLOAD(udp) >= data_end)) {
         bpf_printk("XDP_DROP: %d\n", __LINE__);
         return XDP_DROP;
     }

@@ -42,25 +42,15 @@
 
 #define BPF_F_XDP_DEV_BOUND_ONLY (1U << 6)
 
-#include "dqdk-controller.h"
 #include "bpf/forwarder.skel.h"
-#include "dqdk-blk.h"
-#include "dqdk-sys.h"
 #include "tcpip/ipv4.h"
 #include "tcpip/udp.h"
+#include "dqdk-sys.h"
+#include "dqdk-mem.h"
 #include "dqdk.h"
-#include "tristan.h"
 
-#define UMEM_FACTOR 64
-#define UMEM_LEN (XSK_RING_PROD__DEFAULT_NUM_DESCS * UMEM_FACTOR)
-#define FRAME_SIZE XSK_UMEM__DEFAULT_FRAME_SIZE
-
-#define UMEM_SIZE (UMEM_LEN * FRAME_SIZE)
 #define FILLQ_LEN UMEM_LEN
 #define COMPQ_LEN XSK_RING_PROD__DEFAULT_NUM_DESCS
-
-#define UMEM_FLAGS_USE_HGPG (1 << 0)
-#define UMEM_FLAGS_UNALIGNED (1 << 1)
 
 volatile u32 break_flag = 0;
 
@@ -69,7 +59,7 @@ static umem_info_t* umem_info_create(dqdk_ctx_t* ctx)
     umem_info_t* info = (umem_info_t*)calloc(1, sizeof(umem_info_t));
 
     info->size = ctx->umem_size;
-    info->buffer = ctx->umem_flags & UMEM_FLAGS_USE_HGPG ? dqdk_huge_malloc(ctx, ctx->umem_size, PAGE_2MB) : dqdk_malloc(ctx, ctx->umem_size, 0);
+    info->buffer = ctx->umem_flags & UMEM_FLAGS_USE_HGPG ? dqdk_2mbhuge_malloc(ctx->numa_node, ctx->umem_size) : dqdk_malloc(ctx->umem_size, 0);
     if (info->buffer == NULL) {
         dlog_error2("umem_buffer_create", 0);
         free(info);
@@ -216,15 +206,6 @@ dqdk_always_inline u8* get_udp_payload(dqdk_worker_t* xsk, u8* buffer, u32 len, 
     return (u8*)(udp + 1);
 }
 
-// static dqdk_always_inline u8* prefetch_frame(dqdk_worker_t* xsk, int idx)
-// {
-//     u64 addr = xsk_ring_cons__rx_desc(&xsk->rx, idx)->addr;
-//     u8* frame = xsk_umem__get_data(xsk->umem_info->buffer, addr);
-//     dqdk_prefetch(frame);
-
-//     return frame;
-// }
-
 #define WORKER_LATENCY(worker, param, latency)                                                                                  \
     do {                                                                                                                        \
         (worker)->stats.param.sum += (latency);                                                                                 \
@@ -236,20 +217,15 @@ dqdk_always_inline u8* get_udp_payload(dqdk_worker_t* xsk, u8* buffer, u32 len, 
             (worker)->stats.param.raw[(worker)->stats.param.raw_idx++] = latency;                                               \
     } while (0)
 
-static dqdk_always_inline int dqdk_tlb_test(dqdk_worker_t* xsk, u8* frame, u32 len)
+static int post_async(dqdk_worker_t* xsk, u8* data, u32 datalen)
 {
-    (void)xsk;
-    (void)frame;
-    (void)len;
+    int ret = cne_ring_enqueue_elem(xsk->ring, data, datalen);
+    if (ret < 0) {
+        dlog_error("Ring Buffer is full");
+        return -1;
+    }
 
-    // u32 page_hits = 5;
-    tristan_private_t* private = (tristan_private_t*)xsk->private;
-    int nbpages = private->max_bulk_size / PAGE_SIZE;
-    // for (u32 i = 0; i < page_hits; i++) {
-    u32 addr = (rand() % (nbpages + 1)) * PAGE_SIZE;
-    private->bulk[addr]++;
-    // }
-    return 0;
+    return ret;
 }
 
 static dqdk_always_inline int process_frame(dqdk_worker_t* xsk, u8* frame, u32 len)
@@ -264,32 +240,14 @@ static dqdk_always_inline int process_frame(dqdk_worker_t* xsk, u8* frame, u32 l
         WORKER_LATENCY(xsk, queuing_latency, latency);
     }
 
-    tristan_private_t* private = (tristan_private_t*)xsk->private;
-    if (dqdk_unlikely(private->mode == TRISTAN_MODE_DROP || datalen == 0 || data == NULL))
-        return -1;
+    ret = xsk->frame_processor ? xsk->frame_processor(xsk, data, datalen) : post_async(xsk, data, datalen);
+    if (!ret)
+        xsk->stats.rcvd_bytes += datalen;
 
-    switch (private->mode) {
-    case TRISTAN_MODE_TLB:
-        ret = dqdk_tlb_test(xsk, data, datalen);
-        break;
-    case TRISTAN_MODE_WAVEFORM:
-        ret = tristan_daq_waveform(private, xsk, data, datalen);
-        break;
-    case TRISTAN_MODE_LISTWAVE:
-        ret = tristan_daq_listwave(private, xsk, data, datalen);
-        break;
-    case TRISTAN_MODE_ENERGYHISTO:
-        ret = tristan_daq_energyhisto(private, xsk, data, datalen);
-        break;
-    default:
-        dlog_error("Unknown mode cannot be handled");
-        ret = -1;
-        break;
-    }
     return ret;
 }
 
-static dqdk_always_inline int do_daq(dqdk_worker_t* xsk)
+static dqdk_always_inline int fetch_xsk(dqdk_worker_t* xsk)
 {
     int ret = 0;
     umem_info_t* umem = xsk->umem_info;
@@ -361,13 +319,13 @@ exit:
     return ret;
 }
 
-static int run_daq(dqdk_worker_t* xsk)
+static int daq_loop(dqdk_worker_t* xsk)
 {
     u64 t0, t1;
 
     t0 = clock_nsecs_mono();
     while (dqdk_unlikely(!break_flag)) {
-        do_daq(xsk);
+        fetch_xsk(xsk);
     }
     t1 = clock_nsecs_mono();
 
@@ -388,6 +346,7 @@ static void signal_handler(int sig)
     case SIGINT:
     case SIGTERM:
     case SIGABRT:
+    case SIGHUP:
     case SIGUSR1:
         break_flag = 1;
         break;
@@ -410,6 +369,7 @@ static void stats_dump(dqdk_stats_t* stats, u8 debug)
     printf("    Total runtime (ns):       %llu\n", stats->runtime);
     printf("    Received Frames:          %llu\n", stats->rcvd_frames);
     printf("    Received Packets:         %llu\n", stats->rcvd_pkts);
+    printf("    Total Processed Bytes:    %llu\n", stats->rcvd_bytes);
     printf("    Invalid L3 Packets:       %llu\n", stats->invalid_ip_pkts);
     printf("    Invalid L4 Packets:       %llu\n", stats->invalid_udp_pkts);
     printf("    Empty Batches:            %llu\n", stats->failing_batches);
@@ -435,31 +395,6 @@ static void xsk_stats_dump(dqdk_worker_t* xsk)
 {
     printf("XSK %u on Queue %u Statistics:\n", xsk->index, xsk->queue_id);
     stats_dump(&xsk->stats, xsk->debug_flags & DQDK_DEBUG);
-}
-
-void dqdk_usage(char** argv)
-{
-    printf("Usage: %s -i <interface_name> -q <hardware_queue_id>\n", argv[0]);
-    printf("Arguments:\n");
-    printf("    -a <ports-range>             Accept source ports range e.g. 5000-5002 will reject all ports 3 ports 5000, 5001 & 5002,\n");
-    printf("    -d <duration>                Set the run duration in seconds. Required for TRISTAN waveform and listwave modes\n");
-    printf("    -i <interface>               Set NIC to work on\n");
-    printf("    -q <qid[-qid]>               Set range of hardware queues to work on e.g. -q 1 or -q 1-3.\n");
-    printf("                                 Specifying multiple queues will launch a thread for each queue except if -p poll\n");
-    printf("    -v                           Verbose\n");
-    printf("    -b <size>                    Set batch size. Default: 64\n");
-    printf("    -w                           Use XDP need wakeup flag\n");
-    printf("    -s                           Expected Packet Size. Default: 3392\n");
-    printf("    -l                           Dump latency values as a CSV file. Requires -D\n");
-    printf("    -m <waveform|energy-histo>   Set TRISTAN Mode.\n");
-    printf("    -A <irq1,irq2,...>           Set affinity mapping between application threads and drivers queues\n");
-    printf("                                 e.g. q1 to irq1, q2 to irq2,...\n");
-    printf("    -B                           Enable NAPI busy-poll\n");
-    printf("    -H                           Considering Hyper-threading is enabled, this flag will assign affinity\n");
-    printf("                                 of softirq and the app to two logical cores of the same physical core.\n");
-    printf("    -G                           Activate Huge Pages for UMEM allocation\n");
-    printf("    -S                           Run IRQ and App on same core\n");
-    printf("    -D                           Enable Latency measurements\n");
 }
 
 #define dqdk_update_mask(mask, howmany) (*mask = *mask & (0xffffffffffffffff << (howmany)));
@@ -522,22 +457,6 @@ int dqdk_set_affinity(int ht, int samecore, int irq, unsigned long* cpumask, cpu
     return sched_setaffinity(0, sizeof(cpu_set_t), cpuset);
 }
 
-unsigned long long int dqdk_round_to_power2(unsigned long long int n)
-{
-    if (n == 0)
-        return 1;
-
-    n--;
-    n |= n >> 1;
-    n |= n >> 2;
-    n |= n >> 4;
-    n |= n >> 8;
-    n |= n >> 16;
-    n++;
-
-    return n;
-}
-
 struct worker_obj {
     dqdk_worker_t* xsk;
     dqdk_ctx_t* ctx;
@@ -579,13 +498,12 @@ static void* dqdk_worker(void* ptr)
         goto error;
     }
 
-    ret = run_daq(xsk);
+    ret = daq_loop(xsk);
     if (ret >= 0)
         goto cleanup;
 
 error:
     dlog_errorv("Worker %d is dead!", xsk->index);
-    dqdk_set_status(ctx, DQDK_STATUS_ERROR);
     if (!ctx->barrier_init || (ret = pthread_barrier_wait(&ctx->barrier)) > 0)
         dlog_error2("pthread_barrier_wait", ret);
 
@@ -594,7 +512,7 @@ cleanup:
     return (void*)(long)ret;
 }
 
-int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* noshared_private)
+int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* private)
 {
     static int worker_index = 0;
     int ret;
@@ -616,10 +534,11 @@ int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* noshared_private)
     wobj->ctx = ctx;
     wobj->xsk = xsk;
 
+    xsk->private = private;
+    xsk->frame_processor = ctx->frame_processor;
     xsk->queue_id = qid;
     xsk->index = worker_index++;
-    xsk->private = ctx->private;
-    xsk->dedicated_private = noshared_private;
+    xsk->ring = ctx->ring;
     xsk->batch_size = ctx->batch_size;
     xsk->busy_poll = ctx->busy_poll;
     xsk->debug_flags = ctx->debug_flags;
@@ -681,7 +600,6 @@ int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* noshared_private)
 
     ret = pthread_attr_init(xsk->thread_attrs);
     if (ret) {
-
         ret = -1;
         goto error;
     }
@@ -696,7 +614,6 @@ int dqdk_worker_init(dqdk_ctx_t* ctx, int qid, int irq, void* noshared_private)
     if (!ret)
         return 0;
 error:
-    dqdk_set_status(ctx, DQDK_STATUS_ERROR);
     return ret;
 }
 
@@ -719,6 +636,12 @@ static int dqdk_ctx_free(dqdk_ctx_t* ctx)
     if (ctx->workers != NULL)
         free(ctx->workers);
 
+    if (ctx->ring)
+        cne_ring_free(ctx->ring);
+
+    if (ctx->ring_buffer)
+        dqdk_free(ctx->ring_buffer, ctx->ringsz);
+
     if (ctx->barrier_init)
         pthread_barrier_destroy(&ctx->barrier);
 
@@ -735,24 +658,22 @@ int dqdk_waitall(dqdk_ctx_t* ctx)
     break_flag = 1;
 
     void* thread_ret_ptr = NULL;
-
     if (!ctx)
-        return -1;
+        return -EINVAL;
 
-    if (dqdk_get_status(ctx) > DQDK_STATUS_NONE) {
-        for (u32 _i = 0; _i < ctx->nbqueues; _i++) {
-            worker = ctx->workers[_i];
-            if (worker) {
-                pthread_join(worker->thread, &thread_ret_ptr);
-                if (thread_ret_ptr != NULL) {
-                    dlog_errorv("Worker %d failed and exited", worker->index);
-                    dqdk_set_status(ctx, DQDK_STATUS_ERROR);
-                }
+    int ret = 0;
+    for (u32 _i = 0; _i < ctx->nbqueues; _i++) {
+        worker = ctx->workers[_i];
+        if (worker) {
+            pthread_join(worker->thread, &thread_ret_ptr);
+            if (thread_ret_ptr != NULL) {
+                dlog_errorv("Worker %d failed and exited", worker->index);
+                ret |= (long)thread_ret_ptr;
             }
         }
     }
 
-    return 0;
+    return ret ? -EFAULT : 0;
 }
 
 static int dqdk_ctx_enable_hwtstamp(dqdk_ctx_t* ctx)
@@ -783,7 +704,7 @@ exit:
     return ret;
 }
 
-dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u8 needs_wakeup, u8 busypoll, enum xdp_attach_mode xdp_mode, u32 nbirqs, u8 irqworker_samecore, u32 packetsz, u8 debug, u8 hyperthreading, void* sharedprivate)
+dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flags, u64 umem_size, u32 batch_size, u32 payloadsz, u64 ringsz, dqdk_frame_processor_t frame_processor, dqdk_ctx_opt_t* opts)
 {
     struct rlimit rlim = { RLIM_INFINITY, RLIM_INFINITY };
     dqdk_ctx_t* ctx = calloc(1, sizeof(dqdk_ctx_t));
@@ -793,6 +714,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGABRT, signal_handler);
+    signal(SIGHUP, signal_handler);
     signal(SIGUSR1, signal_handler);
 
     if (ifname == NULL || nbqueues == 0) {
@@ -815,36 +737,45 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     ctx->workers = calloc(nbqueues, sizeof(dqdk_worker_t*));
     ctx->nbports = 0;
     ctx->cpu_mask = 0;
-    switch (xdp_mode) {
-    case XDP_MODE_NATIVE:
+    if (opts) {
+        switch (opts->xdp_mode) {
+        case XDP_MODE_NATIVE:
+            ctx->xmode = XDP_FLAGS_DRV_MODE;
+            break;
+
+        case XDP_MODE_SKB:
+            ctx->xmode = XDP_FLAGS_SKB_MODE;
+            break;
+
+        default:
+            dlog_error("Invalid XDP Mode");
+            dqdk_ctx_free(ctx);
+            return NULL;
+        }
+        ctx->needs_wakeup = opts->needs_wakeup;
+        ctx->hyperthreading = opts->hyperthreading;
+        ctx->debug_flags = opts->debug;
+        ctx->busy_poll = opts->busypoll;
+        ctx->samecore = opts->irqworker_samecore;
+    } else {
         ctx->xmode = XDP_FLAGS_DRV_MODE;
-        break;
-
-    case XDP_MODE_SKB:
-        ctx->xmode = XDP_FLAGS_SKB_MODE;
-        break;
-
-    default:
-        dlog_error("Invalid XDP Mode");
-        dqdk_ctx_free(ctx);
-        return NULL;
+        ctx->needs_wakeup = opts->needs_wakeup;
+        ctx->hyperthreading = opts->hyperthreading;
+        ctx->debug_flags = opts->debug;
+        ctx->busy_poll = opts->busypoll;
+        ctx->samecore = opts->irqworker_samecore;
     }
+
+    ctx->frame_processor = frame_processor;
     ctx->batch_size = batch_size;
-    ctx->needs_wakeup = needs_wakeup;
-    ctx->busy_poll = busypoll;
     ctx->nbqueues = nbqueues;
-    ctx->private = sharedprivate;
-    ctx->hyperthreading = hyperthreading;
-    ctx->debug_flags = debug;
-    ctx->packetsz = packetsz;
+    ctx->payloadsz = payloadsz;
     ctx->ifspeed = dqdk_get_link_speed(ctx->ifname);
     ctx->umem_flags = umem_flags;
     ctx->umem_size = umem_size;
     ctx->libbpf_flags = XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD;
-    ctx->bind_flags = (ctx->needs_wakeup ? XDP_USE_NEED_WAKEUP : 0) | (xdp_mode == XDP_MODE_SKB ? XDP_COPY : 0);
+    ctx->bind_flags = (ctx->needs_wakeup ? XDP_USE_NEED_WAKEUP : 0) | (ctx->xmode == XDP_MODE_SKB ? XDP_COPY : 0);
     ctx->xdp_flags = 0;
-
-    dqdk_set_status(ctx, DQDK_STATUS_NONE);
 
     if (ctx->ifspeed < 0) {
         dlog_error("Error fetching link speed");
@@ -856,9 +787,9 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
 
     ctx->numa_node = nic_numa_node(ifname);
     int is_numa = numa_available();
-    if (is_numa < 0) {
+    if (is_numa < 0)
         nprocs = get_nprocs();
-    } else {
+    else {
         dlog_infov("NUMA is detected! %s is owned by node %d", ctx->ifname, ctx->numa_node);
 
         // failure to get numa node or PCI is equidistant to all NUMA nodes => assign node0
@@ -896,17 +827,38 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
         return NULL;
     }
 
-    if (ctx->umem_flags & UMEM_FLAGS_USE_HGPG) {
-        dlog_info("Huge pages are activated!");
+    if (ctx->frame_processor) {
+        ctx->ring = NULL;
+        ctx->ringsz = 0;
+        ctx->ring_buffer = NULL;
+    } else {
+        u64 count = dqdk_calc_ring_count(ringsz, ctx->payloadsz);
+        ctx->ringsz = dqdk_calc_ring_size(count, payloadsz);
+        double time_capacity = dqdk_calc_ring_msec_capacity(ctx->ringsz, ctx->ifspeed);
+        dlog_infov("Allocating ring buffer size=%llu for %llu elements enough for %lf milliseconds", ctx->ringsz, count, time_capacity);
+        if (ctx->umem_flags & UMEM_FLAGS_USE_HGPG) {
+            dlog_info("Huge pages are activated!");
+            ctx->ring_buffer = dqdk_2mbhuge_malloc(ctx->numa_node, ctx->ringsz);
+        } else
+            ctx->ring_buffer = dqdk_malloc(ctx->ringsz, 0);
+
+        if (!ctx->ring_buffer) {
+            dlog_error("Error allocating huge pages memory for ring buffer");
+            dqdk_ctx_free(ctx);
+            return NULL;
+        }
+
+        dlog_info("Initializing ring buffer");
+        ctx->ring = cne_ring_init(ctx->ring_buffer, ctx->ringsz, ctx->payloadsz, count, 0);
+        if (!ctx->ring) {
+            dlog_error2("cne_ring_init", -1);
+            dqdk_ctx_free(ctx);
+            return NULL;
+        }
+        dlog_info("Finished initializing ring buffer");
     }
 
-    if (nbirqs != nbqueues) {
-        dlog_errorv("IRQs=%d and number of queues=%d must be equal. Make sure you pass the correct arguments to -A", nbirqs, nbqueues);
-        dqdk_ctx_free(ctx);
-        return NULL;
-    }
-
-    if (!irqworker_samecore && nbqueues * 2 > nprocs) {
+    if (!ctx->samecore && nbqueues * 2 > nprocs) {
         dlog_errorv("IRQs and Application threads are running on different cores. You should have enough dedicated cores for both of them. The maximum possible cores now is %d", nprocs);
         dqdk_ctx_free(ctx);
         return NULL;
@@ -936,7 +888,7 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
     }
 
     ctx->forwarder = forwarder__open();
-    ctx->forwarder->bss->debug = debug;
+    ctx->forwarder->bss->debug = ctx->debug_flags;
 
     bpf_program__set_ifindex(ctx->forwarder->progs.dqdk_forwarder, ctx->ifindex);
     bpf_program__set_flags(ctx->forwarder->progs.dqdk_forwarder, BPF_F_XDP_DEV_BOUND_ONLY);
@@ -948,8 +900,8 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
         return NULL;
     }
 
-    LIBBPF_OPTS(bpf_xdp_attach_opts, opts, .old_prog_fd = -1);
-    ret = bpf_xdp_attach(ctx->ifindex, bpf_program__fd(ctx->forwarder->progs.dqdk_forwarder), ctx->xmode, &opts);
+    LIBBPF_OPTS(bpf_xdp_attach_opts, xopts, .old_prog_fd = -1);
+    ret = bpf_xdp_attach(ctx->ifindex, bpf_program__fd(ctx->forwarder->progs.dqdk_forwarder), ctx->xmode, &xopts);
     if (ret < 0) {
         dlog_error2("bpf_xdp_attach", ret);
         dqdk_ctx_free(ctx);
@@ -963,17 +915,18 @@ dqdk_ctx_t* dqdk_ctx_init(char* ifname, u32 queues[], u32 nbqueues, u8 umem_flag
         return NULL;
     }
     ctx->barrier_init = true;
-    dqdk_set_status(ctx, DQDK_STATUS_STARTED);
-
     return ctx;
 }
 
 int dqdk_for_ports_range(dqdk_ctx_t* ctx, u16 start, u16 end)
 {
+    if (!ctx || !ctx->forwarder)
+        return -EINVAL;
+
     ctx->forwarder->bss->start_port = start;
     ctx->forwarder->bss->end_port = end;
 
-    ctx->nbports = end - start;
+    ctx->nbports = end - start + 1;
     return 0;
 }
 
@@ -996,18 +949,13 @@ int dqdk_start(dqdk_ctx_t* ctx)
         goto error;
     }
 
-    dqdk_set_status(ctx, DQDK_STATUS_READY);
-    return ret;
-
 error:
-    dqdk_set_status(ctx, DQDK_STATUS_ERROR);
     return ret;
 }
 
 static void dqdk_latencystats_dump(dqdk_worker_t* worker, FILE* file)
 {
     char buffer[1024] = { 0 };
-
     for (int i = 0; i < DQDK_MAX_LATENCY_METRICS; i++) {
         memset(buffer, 0, 1024);
         snprintf(buffer, 1024, "%d,Queuing,%lld,%d\n", worker->index, worker->stats.queuing_latency.raw[i], DQDK_MAX_LATENCY_METRICS);
@@ -1028,30 +976,27 @@ int dqdk_ctx_fini(dqdk_ctx_t* ctx)
     if (!ctx)
         return -1;
 
-    if (dqdk_get_status(ctx) > DQDK_STATUS_NONE) {
-        FILE* file = NULL;
-
-        if (ctx->debug_flags & DQDK_DEBUG_LATENCYDUMP) {
-            file = fopen("latency-stats.csv", "w");
-            if (file) {
-                char* buffer = "Worker,Type,Value,Count\n";
-                fwrite(buffer, strlen(buffer), 1, file);
-            }
+    FILE* file = NULL;
+    if (ctx->debug_flags & DQDK_DEBUG_LATENCYDUMP) {
+        file = fopen("latency-stats.csv", "w");
+        if (file) {
+            char* buffer = "Worker,Type,Value,Count\n";
+            fwrite(buffer, strlen(buffer), 1, file);
         }
-
-        for (u32 _i = 0; _i < ctx->nbqueues; _i++) {
-            worker = ctx->workers[_i];
-            if (worker) {
-                if (worker->debug_flags & DQDK_DEBUG_LATENCYDUMP)
-                    dqdk_latencystats_dump(worker, file);
-                dqdk_worker_free(worker);
-                ctx->workers[_i] = NULL;
-            }
-        }
-
-        if (file)
-            fclose(file);
     }
+
+    for (u32 _i = 0; _i < ctx->nbqueues; _i++) {
+        worker = ctx->workers[_i];
+        if (worker) {
+            if (worker->debug_flags & DQDK_DEBUG_LATENCYDUMP)
+                dqdk_latencystats_dump(worker, file);
+            dqdk_worker_free(worker);
+            ctx->workers[_i] = NULL;
+        }
+    }
+
+    if (file)
+        fclose(file);
 
     return dqdk_ctx_free(ctx);
 }
@@ -1066,33 +1011,38 @@ void dqdk_dump_stats(dqdk_ctx_t* ctx)
     memset(&avg, 0, sizeof(avg));
 
     for (u32 i = 0; i < ctx->nbqueues; i++) {
+        if (ctx->workers[i])
+            xsk_stats_dump(ctx->workers[i]);
+
         dqdk_stats_t* wstats = dqdk_worker_stats(ctx, i);
-        xsk_stats_dump(ctx->workers[i]);
-        avg.runtime = MAX(avg.runtime, wstats->runtime);
-        avg.rcvd_pkts += wstats->rcvd_pkts;
-        avg.rcvd_frames += wstats->rcvd_frames;
-        avg.failing_batches += wstats->failing_batches;
+        if (wstats) {
+            avg.runtime = MAX(avg.runtime, wstats->runtime);
+            avg.rcvd_pkts += wstats->rcvd_pkts;
+            avg.rcvd_frames += wstats->rcvd_frames;
+            avg.rcvd_bytes += wstats->rcvd_bytes;
+            avg.failing_batches += wstats->failing_batches;
 
-        avg.fail_polls += wstats->fail_polls;
-        avg.invalid_ip_pkts += wstats->invalid_ip_pkts;
-        avg.invalid_udp_pkts += wstats->invalid_udp_pkts;
-        avg.rx_empty_polls += wstats->rx_empty_polls;
-        avg.rx_fill_fail_polls += wstats->rx_fill_fail_polls;
-        avg.timeout_polls += wstats->timeout_polls;
-        avg.rx_successful_fills += wstats->rx_successful_fills;
+            avg.fail_polls += wstats->fail_polls;
+            avg.invalid_ip_pkts += wstats->invalid_ip_pkts;
+            avg.invalid_udp_pkts += wstats->invalid_udp_pkts;
+            avg.rx_empty_polls += wstats->rx_empty_polls;
+            avg.rx_fill_fail_polls += wstats->rx_fill_fail_polls;
+            avg.timeout_polls += wstats->timeout_polls;
+            avg.rx_successful_fills += wstats->rx_successful_fills;
 
-        avg.xstats.rx_dropped += wstats->xstats.rx_dropped;
-        avg.xstats.rx_invalid_descs += wstats->xstats.rx_invalid_descs;
-        avg.xstats.rx_ring_full += wstats->xstats.rx_ring_full;
-        avg.xstats.rx_fill_ring_empty_descs += wstats->xstats.rx_fill_ring_empty_descs;
+            avg.xstats.rx_dropped += wstats->xstats.rx_dropped;
+            avg.xstats.rx_invalid_descs += wstats->xstats.rx_invalid_descs;
+            avg.xstats.rx_ring_full += wstats->xstats.rx_ring_full;
+            avg.xstats.rx_fill_ring_empty_descs += wstats->xstats.rx_fill_ring_empty_descs;
 
-        avg.queuing_latency.sum += wstats->queuing_latency.sum;
-        avg.queuing_latency.min = avg.queuing_latency.min == 0 ? wstats->queuing_latency.min : MIN(avg.queuing_latency.min, wstats->queuing_latency.min);
-        avg.queuing_latency.max = MAX(avg.queuing_latency.max, wstats->queuing_latency.max);
+            avg.queuing_latency.sum += wstats->queuing_latency.sum;
+            avg.queuing_latency.min = avg.queuing_latency.min == 0 ? wstats->queuing_latency.min : MIN(avg.queuing_latency.min, wstats->queuing_latency.min);
+            avg.queuing_latency.max = MAX(avg.queuing_latency.max, wstats->queuing_latency.max);
 
-        avg.processing_latency.sum += wstats->processing_latency.sum;
-        avg.processing_latency.min = avg.processing_latency.min == 0 ? wstats->processing_latency.min : MIN(avg.processing_latency.min, wstats->processing_latency.min);
-        avg.processing_latency.max = MAX(avg.processing_latency.max, wstats->processing_latency.max);
+            avg.processing_latency.sum += wstats->processing_latency.sum;
+            avg.processing_latency.min = avg.processing_latency.min == 0 ? wstats->processing_latency.min : MIN(avg.processing_latency.min, wstats->processing_latency.min);
+            avg.processing_latency.max = MAX(avg.processing_latency.max, wstats->processing_latency.max);
+        }
     }
 
     if (ctx->nbqueues != 1) {
@@ -1101,319 +1051,49 @@ void dqdk_dump_stats(dqdk_ctx_t* ctx)
     }
 }
 
-int dqdk_free(dqdk_ctx_t* ctx, u8* mem, u64 size)
-{
-    (void)ctx;
-    return munmap(mem, size);
-}
-
-static u8* dqdk_map(dqdk_ctx_t* ctx, u64 size, int flags, int fd)
-{
-    (void)ctx;
-    void* map = mmap(NULL, size, PROT_READ | PROT_WRITE, flags, fd, 0);
-
-    if (map == MAP_FAILED) {
-        dlog_error2("dqdk_map", (int)(u64)map);
-        return NULL;
-    }
-
-    if (mlock(map, size) < 0) {
-        dqdk_free(ctx, map, size);
-        map = NULL;
-    }
-
-    return (u8*)map;
-}
-
-u8* dqdk_malloc(dqdk_ctx_t* ctx, u64 size, int flags)
-{
-    return dqdk_map(ctx, size, MAP_PRIVATE | MAP_ANONYMOUS | flags, -1);
-}
-
-u8* dqdk_huge_malloc(dqdk_ctx_t* ctx, u64 size, page_size_t pagesz)
-{
-    int additional_pages = 0, needed_hgpg = 0;
-
-    switch (pagesz) {
-    case PAGE_2MB:
-        additional_pages = HUGETLB_CALC_2MB(size);
-        break;
-    case PAGE_1GB:
-        additional_pages = HUGETLB_CALC_1GB(size);
-        break;
-
-    case PAGE_4KB:
-    default:
-        return NULL;
-    }
-
-    // struct stat st;
-    // if (stat(HUGETLBFS_PATH, &st) == 0 && S_ISDIR(st.st_mode)) {
-    //     char hugepage_filename[PATH_MAX];
-    //     snprintf(hugepage_filename, PATH_MAX, HUGETLBFS_PATH "/dqdk%d", atomic_fetch_add_explicit(&ctx->huge_allocations, 1, memory_order_relaxed));
-    //     dlog_infov("Allocating huge pages memory to %s", hugepage_filename);
-    //     int fd = open(hugepage_filename, O_CREAT | O_RDWR, 0755);
-    //     if (fd < 0) {
-    //         dlog_error2("open", fd);
-    //         return NULL;
-    //     }
-
-    //     if (ftruncate(fd, size) < 0) {
-    //         dlog_error2("ftruncate", -1);
-    //         return NULL;
-    //     }
-
-    //     u8* map = dqdk_map(ctx, size, MAP_PRIVATE | MAP_HUGETLB | pagesz, fd);
-    //     close(fd);
-    //     unlink(hugepage_filename);
-    //     return map;
-    // }
-
-    needed_hgpg = get_hugepages(ctx->numa_node, pagesz) + additional_pages;
-    int page = set_hugepages(ctx->numa_node, needed_hgpg, pagesz);
-    dlog_infov("Reserved huge pages are %d now", page);
-
-    return dqdk_malloc(ctx, size, MAP_HUGETLB | pagesz);
-}
-
 int dqdk_uses_hugepages(dqdk_ctx_t* ctx)
 {
+    if (!ctx)
+        return -EINVAL;
     return ctx->umem_flags & UMEM_FLAGS_USE_HGPG;
 }
 
 u32 dqdk_workers_count(dqdk_ctx_t* ctx)
 {
+    if (!ctx)
+        return 0;
     return ctx->nbqueues;
 }
 
 dqdk_stats_t* dqdk_worker_stats(dqdk_ctx_t* ctx, u32 worker_index)
 {
-    return &ctx->workers[worker_index]->stats;
+    if (!ctx)
+        return NULL;
+
+    dqdk_worker_t* worker = ctx->workers[worker_index];
+    if (!worker)
+        return NULL;
+    return &worker->stats;
 }
 
-char* dqdk_get_status_string(dqdk_status_t status)
-{
-    char* values[] = { "NONE", "STARTED", "READY", "CLOSED", "ERROR"};
-    return values[status];
+double dqdk_calc_ring_msec_capacity(u64 ringsz, int ifspeed) {
+    return (ringsz * 8e3) / (ifspeed * (1ULL << 20));
 }
 
-dqdk_status_t dqdk_get_status(dqdk_ctx_t* ctx)
+double dqdk_ring_msec_capacity(dqdk_ctx_t* ctx)
 {
-    return atomic_load(&ctx->status);
-}
-
-void dqdk_set_status(dqdk_ctx_t* ctx, dqdk_status_t status)
-{
-    atomic_store(&ctx->status, status);
-}
-
-int main(int argc, char** argv)
-{
-    // options values
-    char* opt_ifname = NULL;
-    u32 opt_batchsize = 64, opt_queues[MAX_QUEUES], opt_irqs[MAX_QUEUES];
-    double opt_duration = -1;
-    u8 opt_needs_wakeup = 0, opt_hyperthreading = 0, opt_samecore = 0,
-       opt_busy_poll = 0, opt_umem_flags = 0, opt_debug = 0;
-    int opt_packetsz = 3438;
-
-    // program variables
-    tristan_mode_t mode = TRISTAN_MODE_WAVEFORM;
-    tristan_private_t private;
-    int opt;
-    u32 nbqueues = 0, nbirqs = 0;
-
-    dqdk_ctx_t* ctx = NULL;
-    u16 start_port = 0, end_port = 0;
-    dqdk_controller_t* controller = NULL;
-
-    if (argc == 1) {
-        dqdk_usage(argv);
+    if (!ctx)
         return 0;
-    }
 
-    memset(&private, 0, sizeof(private));
-    memset(opt_queues, -1, sizeof(u32) * MAX_QUEUES);
-    memset(opt_irqs, -1, sizeof(u32) * MAX_QUEUES);
+    return dqdk_calc_ring_msec_capacity(ctx->ringsz, ctx->ifspeed);
+}
 
-    while ((opt = getopt(argc, argv, "a:b:d:hi:q:ws:lm:A:BDHGS")) != -1) {
-        switch (opt) {
-        case 'h':
-            dqdk_usage(argv);
-            return 0;
-        case 'a':
-            char* delimiter = NULL;
-            start_port = strtol(optarg, &delimiter, 10);
-            if (delimiter != optarg) {
-                end_port = strtol(++delimiter, &delimiter, 10);
-            } else {
-                dlog_error("Invalid port range.");
-                exit(EXIT_FAILURE);
-            }
-            break;
-        case 'A':
-            // mapping to queues is 1-to-1 e.g. first irq to first queue...
-            if (strchr(optarg, ',') == NULL) {
-                nbirqs = 1;
-                opt_irqs[0] = atoi(optarg);
-            } else {
-                char *delimiter = NULL, *cursor = optarg;
-                u32 irq = -1;
-                do {
-                    irq = strtol(cursor, &delimiter, 10);
-                    if (errno != 0
-                        || cursor == delimiter
-                        || (delimiter[0] != ',' && delimiter[0] != 0)) {
-                        dlog_error("Invalid IRQ string");
-                        goto cleanup;
-                    }
+u64 dqdk_calc_ring_count(u64 ringsz, u32 payloadsz)
+{
+    return get_powerof2(ringsz / payloadsz);
+}
 
-                    cursor = delimiter + 1;
-                    opt_irqs[nbirqs++] = irq;
-                } while (delimiter[0] != 0);
-            }
-            break;
-        case 'd':
-            opt_duration = atof(optarg);
-            break;
-        case 'i':
-            opt_ifname = optarg;
-            break;
-        case 'q':
-            if (strchr(optarg, '-') == NULL) {
-                nbqueues = 1;
-                opt_queues[0] = atoi(optarg);
-            } else {
-                char* delimiter = NULL;
-                u32 start = strtol(optarg, &delimiter, 10), end;
-                if (delimiter != optarg) {
-                    end = strtol(++delimiter, &delimiter, 10);
-                } else {
-                    dlog_error("Invalid queue range. Accepted: 1,2,3 or 1");
-                    exit(EXIT_FAILURE);
-                }
-
-                nbqueues = (end - start) + 1;
-                if (nbqueues > MAX_QUEUES) {
-                    dlog_errorv("Too many queues. Maximum is %d", MAX_QUEUES);
-                    exit(EXIT_FAILURE);
-                }
-
-                for (u32 idx = 0; idx < nbqueues; ++idx) {
-                    opt_queues[idx] = start + idx;
-                }
-            }
-            break;
-        case 's':
-            opt_packetsz = atoi(optarg);
-            break;
-        case 'b':
-            opt_batchsize = atoi(optarg);
-            break;
-        case 'w':
-            opt_needs_wakeup = 1;
-            break;
-        case 'B':
-            opt_busy_poll = 1;
-            break;
-        case 'H':
-            opt_hyperthreading = 1;
-            break;
-        case 'G':
-            opt_umem_flags |= UMEM_FLAGS_USE_HGPG;
-            break;
-        case 'S':
-            opt_samecore = 1;
-            break;
-        case 'm':
-            if (strcmp(optarg, tristan_modes[TRISTAN_MODE_TLB]) == 0)
-                mode = TRISTAN_MODE_TLB;
-            else if (strcmp(optarg, tristan_modes[TRISTAN_MODE_DROP]) == 0)
-                mode = TRISTAN_MODE_DROP;
-            else if (strcmp(optarg, tristan_modes[TRISTAN_MODE_ENERGYHISTO]) == 0)
-                mode = TRISTAN_MODE_ENERGYHISTO;
-            else if (strcmp(optarg, tristan_modes[TRISTAN_MODE_WAVEFORM]) == 0)
-                mode = TRISTAN_MODE_WAVEFORM;
-            else if (strcmp(optarg, tristan_modes[TRISTAN_MODE_LISTWAVE]) == 0)
-                mode = TRISTAN_MODE_LISTWAVE;
-            else {
-                dlog_errorv("Unknown TRISTAN mode: %s", optarg);
-                exit(EXIT_FAILURE);
-            }
-            break;
-        case 'D':
-            opt_debug |= DQDK_DEBUG;
-            break;
-        case 'l':
-            opt_debug |= DQDK_DEBUG_LATENCYDUMP;
-            break;
-        default:
-            dqdk_usage(argv);
-            dlog_error("Invalid Arg\n");
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    ctx = dqdk_ctx_init(opt_ifname, opt_queues, nbqueues, opt_umem_flags, UMEM_SIZE, opt_batchsize, opt_needs_wakeup, opt_busy_poll, XDP_MODE_NATIVE, nbirqs, opt_samecore, opt_packetsz, opt_debug, opt_hyperthreading, (void*)&private);
-
-    if (!ctx) {
-        dlog_info("Error Initializing DQDK Context");
-        goto cleanup;
-    }
-
-    if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB) {
-        dlog_info("Waiting for Control Software to connect...");
-        controller = dqdk_controller_start(ctx);
-        if (controller == NULL)
-            goto cleanup;
-    }
-
-    dqdk_for_ports_range(ctx, start_port, end_port);
-
-    /* Calculate the size of the needed buffer using link speed, duration and packet size
-     * Convert link speed to bytes per second from Mbits per second,
-     * Convert duration from milliseconds to seconds
-     */
-    if ((mode == TRISTAN_MODE_TLB || mode == TRISTAN_MODE_WAVEFORM || mode == TRISTAN_MODE_LISTWAVE)
-        && opt_duration <= 0) {
-        dlog_error("TRISTAN Modes: waveform and listwave require setting a duration");
-        goto cleanup;
-    }
-
-    u64 bulk_size = (u64)ceil(((ctx->ifspeed * 1.0 / 8) * 1024 * 1024) * (opt_duration * 1.0 / 1000));
-    if (tristan_init(ctx, &private, mode, bulk_size) < 0)
-        goto cleanup;
-
-    for (u32 i = 0; i < nbqueues; i++) {
-        if (dqdk_worker_init(ctx, opt_queues[i], opt_irqs[i], NULL) < 0)
-            goto cleanup;
-    }
-
-    if (dqdk_start(ctx) < 0) {
-        dlog_error("Error starting DQDK");
-        goto cleanup;
-    }
-
-    dlog_infov("TRISTAN DAQ in mode %s Started!", tristan_modes[mode]);
-
-    if (mode != TRISTAN_MODE_DROP && mode != TRISTAN_MODE_TLB) {
-        int ret = dqdk_controller_wait(controller);
-        // FIXME: in case the connection closed we need to run some timer and close after that
-        if (ret < 0)
-            goto cleanup;
-    } else {
-        getchar();
-    }
-
-    dlog_info("Closing...");
-
-    tristan_save(&private);
-
-    dqdk_waitall(ctx);
-    dqdk_dump_stats(ctx);
-
-cleanup:
-    tristan_fini(ctx, controller, &private, opt_duration);
-
-    return dqdk_ctx_fini(ctx);
+u64 dqdk_calc_ring_size(u32 count, u32 payloadsz)
+{
+    return cne_ring_get_memsize_elem(payloadsz, count);
 }

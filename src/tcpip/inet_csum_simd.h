@@ -38,6 +38,10 @@
 #define DQDK_INET_CSUM_SIMD_H
 
 #include <x86intrin.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+#include "ctypes.h"
 
 dqdk_always_inline inline uint64_t m128i_extract_u64(__m128i a, int i)
 {
