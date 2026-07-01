@@ -24,8 +24,19 @@ Cite our paper:
   doi={10.1109/TNS.2024.3452469}}
 ```
 
-## Build and Install
+## Build and Configuration
 
+### GRUB Configuration
+
+1. Edit `/etc/default/grub`
+2. Set the isolated CPU cores and the needed hugepages correctly using `isolcpus` and `hugepages` respectively, e.g.:
+```
+GRUB_CMDLINE_LINUX_DEFAULT="intel_idle.max_cstate=0 processor.max_cstate=0 intel_pstate=disable audit=0 default_hugepagesz=2M hugepagesz=2M hugepages=32768 intel_iommu=on iommu=pt isolcpus=0,4,8,12,16,20,24,28"
+```
+3. `sudo update-grub`
+4. Reboot
+
+### Build and Install
 **Requires** Linux Kernel 6.6+
 Tested on Ubuntu 24.04.01 (Kernel 6.8)
 
