@@ -240,10 +240,12 @@ static dqdk_always_inline int process_frame(dqdk_worker_t* xsk, u8* frame, u32 l
         WORKER_LATENCY(xsk, queuing_latency, latency);
     }
 
-    ret = xsk->frame_processor ? xsk->frame_processor(xsk, data, datalen) : post_async(xsk, data, datalen);
-    if (!ret)
-        xsk->stats.rcvd_bytes += datalen;
-
+    if (datalen) {
+        ret = xsk->frame_processor ? xsk->frame_processor(xsk, data, datalen) : post_async(xsk, data, datalen);
+        if (!ret)
+            xsk->stats.rcvd_bytes += datalen;
+    } else
+        ret = -ENOBUFS;
     return ret;
 }
 
@@ -1076,7 +1078,8 @@ dqdk_stats_t* dqdk_worker_stats(dqdk_ctx_t* ctx, u32 worker_index)
     return &worker->stats;
 }
 
-double dqdk_calc_ring_msec_capacity(u64 ringsz, int ifspeed) {
+double dqdk_calc_ring_msec_capacity(u64 ringsz, int ifspeed)
+{
     return (ringsz * 8e3) / (ifspeed * (1ULL << 20));
 }
 

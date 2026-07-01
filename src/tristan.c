@@ -49,24 +49,6 @@ struct csv_dumper_priv {
     int fd;
 };
 
-static int bhist_csv_dump_row(u32 energy, u32 freq, void* priv)
-{
-    if (!freq)
-        return 0;
-
-    struct csv_dumper_priv* meta = (struct csv_dumper_priv*)priv;
-    return dprintf(meta->fd, "%d,%d,%u,%u\n", meta->channel, meta->histo, energy, freq);
-}
-
-int bhisto_csv_dump(bhisto_t* bhisto, int fd, int channel, int histo)
-{
-    if (!bhisto)
-        return 0;
-
-    struct csv_dumper_priv priv = { .channel = channel, .histo = histo, .fd = fd };
-    return bhisto_iterate(bhisto, bhist_csv_dump_row, &priv);
-}
-
 static int is_store_raw(u64 ringsz, u32 payloadsz, char* ifname, tristan_mode_t mode, s64 duration)
 {
     if (mode == TRISTAN_MODE_WAVEFORM)
@@ -151,15 +133,10 @@ int tristan_init(dqdk_ctx_t* ctx, tristan_t* private, char* basedir, s64 duratio
     }
 
     if (is_store_histo(private->mode)) {
-        for (int channel = 0; channel < CHNLS_COUNT; channel++) {
-            for (int hidx = 0; hidx < CHANNELHISTO_COUNT; hidx++) {
-                private->histo->channels[channel].histograms[hidx] = bhisto(HISTO_BUCKETSCOUNT, HISTO_MAXVAL, ctx->numa_node, BHISTO_FLAGS_THREADSAFE);
-                if (!private->histo->channels[channel].histograms[hidx]) {
-                    dlog_error("Error initializing histograms");
-                    return -1;
-                }
-            }
-        }
+        if (dqdk_uses_hugepages(ctx))
+            private->histo = (tristan_histo_t*)dqdk_huge_malloc(ctx->numa_node, TRISTAN_HISTO_SZ, PAGE_2MB);
+        else
+            private->histo = (tristan_histo_t*)dqdk_malloc(TRISTAN_HISTO_SZ, 0);
 
         char* path = gethistofilename(private);
         private->histo_fd = open(path, O_CREAT | O_WRONLY, 0644);
@@ -228,14 +205,17 @@ int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_t* priv
         }
 
         if (private->histo) {
+            dlog_info("Saving histogram file...");
             for (int channel = 0; channel < CHNLS_COUNT; channel++) {
                 for (int hidx = 0; hidx < CHANNELHISTO_COUNT; hidx++) {
-                    if (bhisto_csv_dump(private->histo->channels[channel].histograms[hidx], private->histo_fd, channel, hidx) < 0)
-                        dlog_errorv("Error writing histogram %d in channel %d", hidx, channel);
-                    bhisto_free(private->histo->channels[channel].histograms[hidx]);
+                    for (int energy = 0; energy < HISTO_BINS; energy++) {
+                        u32 freq = private->histo->channels[channel].histograms[hidx][energy];
+                        if (freq)
+                            dprintf(private->histo_fd, "%d,%d,%u,%u\n", channel, hidx, energy, freq);
+                    }
                 }
             }
-            free(private->histo);
+            dqdk_free((u8*)private->histo, TRISTAN_HISTO_SZ);
         }
 
         if (fsync(private->histo_fd) || close(private->histo_fd))
@@ -252,16 +232,15 @@ int tristan_fini(dqdk_ctx_t* ctx, dqdk_controller_t* controller, tristan_t* priv
 
 static dqdk_always_inline int histogram_event(tristan_histo_t* histo, tristan_energy_evt_t* evt)
 {
+    int energy = evt->energy >> 8; // convert 24bits to 16 bits
     if (evt->channel >= CHNLS_COUNT
         || evt->hist_class >= CHANNELHISTO_COUNT
-        || evt->energy >= HISTO_MAXVAL) {
+        || energy >= HISTO_MAXVAL) {
         dlog_errorv("Out of bounds Energy Event: Channel ID=%u, Histogram Index=%u, Energy=%u", evt->channel, evt->hist_class, evt->energy);
         return -1;
     }
 
-    if (bhisto_increment(histo->channels[evt->channel].histograms[evt->hist_class], evt->energy) < 0)
-        dlog_errorv("bhisto_increment failed. Channel=%d, Histogram=%d, Bin=%d", evt->channel, evt->hist_class, evt->energy);
-
+    atomic_fetch_add_explicit(&histo->channels[evt->channel].histograms[evt->hist_class][energy], 1, memory_order_relaxed);
     return 0;
 }
 

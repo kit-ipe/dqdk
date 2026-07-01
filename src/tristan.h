@@ -52,13 +52,12 @@ typedef struct listwave tristan_listwave_t;
 
 #define TRISTAN_HISTO_EVT_SZ sizeof(tristan_energy_evt_t)
 
+#define HISTO_BINS (2 << 15) // 2^16 bins
 #define CHANNELHISTO_COUNT 6
 #define TILECHNLS_COUNT 168
 #define TILES_COUNT 9
 #define CHNLS_COUNT (TILECHNLS_COUNT * TILES_COUNT)
-
-#define HISTO_BUCKETSCOUNT (1 << 8)
-#define HISTO_MAXVAL (1 << 24) // = 2 ^ 24 values
+#define HISTO_MAXVAL (1 << 16) // = 2 ^ 24 values
 
 typedef enum {
     TRISTAN_MODE_WAVEFORM,
@@ -70,7 +69,7 @@ typedef enum {
 extern char* tristan_modes[];
 
 typedef struct {
-    bhisto_t* histograms[CHANNELHISTO_COUNT];
+    u32 histograms[CHANNELHISTO_COUNT][HISTO_BINS];
 } chnl_t;
 
 typedef struct {
